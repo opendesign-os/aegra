@@ -89,6 +89,20 @@ class AssistantList(BaseModel):
     total: int
 
 
+AssistantSelectField = Literal[
+    "assistant_id",
+    "graph_id",
+    "name",
+    "description",
+    "config",
+    "context",
+    "created_at",
+    "updated_at",
+    "metadata",
+    "version",
+]
+
+
 class AssistantSearchRequest(BaseModel):
     """Request model for assistant search"""
 
@@ -109,6 +123,7 @@ class AssistantSearchRequest(BaseModel):
         None,
         description="Sort direction (SDK-compatible). Defaults to 'desc' when sort_by is set.",
     )
+    select: list[AssistantSelectField] | None = Field(None, description="Fields to return; all fields when omitted")
 
 
 class AgentSchemas(BaseModel):

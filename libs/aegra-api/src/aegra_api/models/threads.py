@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 
 from aegra_api.models.entity_ids import ENTITY_ID_PATTERN, MAX_ENTITY_ID_LENGTH
 from aegra_api.models.search_limit import (
@@ -51,7 +51,7 @@ class ThreadCreate(BaseModel):
     initial_state: dict[str, Any] | None = Field(None, description="LangGraph initial state")
     thread_id: str | None = Field(
         None,
-        alias="threadId",
+        validation_alias=AliasChoices("thread_id", "threadId"),
         min_length=1,
         max_length=MAX_THREAD_ID_LENGTH,
         pattern=ENTITY_ID_PATTERN,
@@ -64,19 +64,53 @@ class ThreadCreate(BaseModel):
     )
     if_exists: str | None = Field(
         "raise",
-        alias="ifExists",
+        validation_alias=AliasChoices("if_exists", "ifExists"),
         description="Behavior when thread exists: 'raise' (default) or 'do_nothing'",
     )
     ttl: ThreadTTLSpec | None = Field(
         None,
         description="Per-thread TTL override; requires TTL to be configured server-side or default_ttl set",
     )
+    supersteps: list[dict[str, Any]] | None = Field(
+        None,
+        description=(
+            "Checkpoint history to seed the thread with. Each superstep is "
+            '{"updates": [{"values": ..., "as_node": ...}]}. Requires graph_id or '
+            "assistant_id in metadata."
+        ),
+    )
+
+    @field_validator("supersteps")
+    @classmethod
+    def validate_supersteps(cls, v: list[dict[str, Any]] | None) -> list[dict[str, Any]] | None:
+        if v is None:
+            return None
+        for step in v:
+            updates = step.get("updates")
+            if not isinstance(updates, list) or not updates:
+                raise ValueError("each superstep needs a non-empty 'updates' list")
+            for update in updates:
+                if not isinstance(update, dict):
+                    raise ValueError("each update must be an object")
+                if update.get("command") is not None:
+                    raise ValueError("supersteps 'command' is not supported; use 'values' with 'as_node'")
+        return v
 
 
 class ThreadUpdate(BaseModel):
     """Request model for updating threads"""
 
     metadata: dict[str, Any] | None = Field(None, description="Thread metadata to update")
+    ttl: ThreadTTLSpec | None = Field(None, description="Replace the thread's TTL")
+
+
+class ThreadPruneRequest(BaseModel):
+    """Request model for pruning threads."""
+
+    thread_ids: list[str] | None = Field(None, description="Threads to prune; omit to sweep expired threads")
+    strategy: Literal["delete", "keep_latest"] | None = Field(
+        None, description="'delete' removes the thread, 'keep_latest' compacts its history"
+    )
 
 
 class ThreadPruneResponse(BaseModel):
@@ -84,6 +118,14 @@ class ThreadPruneResponse(BaseModel):
 
     deleted: int = Field(0, description="Expired threads fully deleted (strategy 'delete')")
     pruned: int = Field(0, description="Expired threads whose history was pruned (strategy 'keep_latest')")
+
+
+class ThreadTTLInfo(BaseModel):
+    """TTL state of a thread."""
+
+    strategy: str | None = None
+    ttl: float | None = None
+    expires_at: datetime | None = None
 
 
 class Thread(BaseModel):
@@ -100,6 +142,11 @@ class Thread(BaseModel):
     user_id: str = Field(..., description="Identifier of the user who owns this thread.")
     created_at: datetime = Field(..., description="Timestamp when the thread was created.")
     updated_at: datetime = Field(..., description="Timestamp when the thread was last updated.")
+    state_updated_at: datetime | None = Field(None, description="Timestamp of the last state write.")
+    config: dict[str, Any] | None = Field(None, description="Config the thread's runs execute with.")
+    values: dict[str, Any] | None = Field(None, description="Current state values of the thread.")
+    interrupts: dict[str, Any] | None = Field(None, description="Pending interrupts keyed by task id.")
+    ttl: ThreadTTLInfo | None = Field(None, description="TTL info; only present when requested via include=ttl.")
 
     @field_validator("status", mode="before")
     @classmethod
@@ -115,6 +162,24 @@ class ThreadList(BaseModel):
 
     threads: list[Thread]
     total: int
+
+
+ThreadSelectField = Literal[
+    "thread_id", "created_at", "updated_at", "state_updated_at", "metadata", "config", "status", "values", "interrupts"
+]
+
+
+class ThreadCountRequest(BaseModel):
+    """Request model for counting threads."""
+
+    metadata: dict[str, Any] | None = Field(None, description="Metadata filters")
+    values: dict[str, Any] | None = Field(None, description="State values to filter on")
+    status: str | None = Field(None, description="Thread status filter (idle, busy, interrupted, error)")
+
+    @field_validator("status")
+    @classmethod
+    def validate_status(cls, v: str | None) -> str | None:
+        return validate_thread_status(v) if v is not None else v
 
 
 class ThreadSearchRequest(BaseModel):
@@ -144,6 +209,21 @@ class ThreadSearchRequest(BaseModel):
         None,
         description="Sort direction (SDK-compatible). Defaults to 'desc' when sort_by is set.",
     )
+    ids: list[str] | None = Field(None, description="Restrict results to these thread IDs")
+    select: list[ThreadSelectField] | None = Field(None, description="Fields to return; all fields when omitted")
+    values: dict[str, Any] | None = Field(None, description="State values to filter on")
+    extract: dict[str, str] | None = Field(None, description="Alias to JSONB path projections")
+
+    @field_validator("values", "extract")
+    @classmethod
+    def reject_state_filters(cls, v: Any, info: ValidationInfo) -> Any:
+        """Aegra keeps state in checkpoints, not on the thread row, so these cannot be served."""
+        if v:
+            raise ValueError(
+                f"'{info.field_name}' is not supported: thread state lives in checkpoints, "
+                "not on the thread row. Read state via /threads/{thread_id}/state."
+            )
+        return v
 
     @field_validator("limit")
     @classmethod

@@ -10,7 +10,9 @@ from uuid import uuid4
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select, update
+from fastapi.responses import JSONResponse
+from langgraph.types import StateUpdate
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -41,9 +43,16 @@ from aegra_api.models import (
 )
 from aegra_api.models.errors import CONFLICT, NOT_FOUND, AgentProtocolError
 from aegra_api.models.search_limit import effective_search_limit
+from aegra_api.models.threads import ThreadCountRequest, ThreadPruneRequest, ThreadTTLInfo
+from aegra_api.services.langgraph_service import create_thread_config, get_langgraph_service
 from aegra_api.services.streaming_service import streaming_service
+from aegra_api.services.thread_copy import copy_thread_checkpoints
 from aegra_api.services.thread_state_service import ThreadStateService
-from aegra_api.services.thread_ttl import get_thread_ttl_config, prune_expired_threads_for_user
+from aegra_api.services.thread_ttl import (
+    get_thread_ttl_config,
+    prune_expired_threads_for_user,
+    prune_threads_by_id,
+)
 from aegra_api.utils.jsonb import jsonb_patch, jsonb_shallow_merge
 from aegra_api.utils.run_utils import strip_pinned_config_keys
 
@@ -152,8 +161,49 @@ def _serialize_thread(thread_orm: ThreadORM, default_metadata: dict[str, Any] | 
             "user_id": u_id,
             "created_at": c_at,
             "updated_at": u_at,
+            "state_updated_at": u_at,
+            "config": {
+                "configurable": {
+                    k: v
+                    for k, v in (
+                        ("thread_id", t_id),
+                        ("graph_id", metadata.get("graph_id")),
+                        ("assistant_id", metadata.get("assistant_id")),
+                    )
+                    if v is not None
+                }
+            },
         }
     )
+
+
+_INCLUDE_OPTIONS = frozenset({"ttl", "values", "interrupts"})
+
+
+async def _thread_state(thread_id: str, metadata: dict[str, Any], user: User) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Current values and pending interrupts, or empties when no graph is bound."""
+    graph_id = metadata.get("graph_id")
+    if not graph_id:
+        return {}, {}
+    config = create_thread_config(thread_id, user)
+    async with get_langgraph_service().get_graph(
+        graph_id, config=config, access_context="threads.read", user=user
+    ) as agent:
+        snapshot = await agent.aget_state(config)
+    values = snapshot.values if isinstance(snapshot.values, dict) else {}
+    interrupts = {
+        task.id: [i.value for i in task.interrupts]
+        for task in (snapshot.tasks or [])
+        if getattr(task, "interrupts", None)
+    }
+    return values, interrupts
+
+
+async def _thread_ttl_info(session: AsyncSession, thread_id: str) -> ThreadTTLInfo | None:
+    row = await session.scalar(select(ThreadTTLORM).where(ThreadTTLORM.thread_id == thread_id))
+    if row is None:
+        return None
+    return ThreadTTLInfo(strategy=row.strategy, ttl=row.ttl_minutes, expires_at=row.expires_at)
 
 
 # --- Endpoints ---
@@ -189,6 +239,28 @@ def _resolve_ttl_row(thread_id: str, requested: ThreadTTLSpec | None) -> ThreadT
         created_at=now,
         expires_at=now + timedelta(minutes=ttl_minutes),
     )
+
+
+async def _apply_supersteps(
+    thread_id: str,
+    supersteps: list[dict[str, Any]],
+    metadata: dict[str, Any],
+    user: User,
+) -> None:
+    """Seed a freshly created thread with checkpoint history."""
+    graph_id = metadata.get("graph_id")
+    if not graph_id:
+        raise HTTPException(422, "supersteps requires 'graph_id' in metadata")
+
+    config = create_thread_config(thread_id, user)
+    batches = [
+        [StateUpdate(values=update.get("values"), as_node=update.get("as_node")) for update in step["updates"]]
+        for step in supersteps
+    ]
+    async with get_langgraph_service().get_graph(
+        graph_id, config=config, access_context="threads.update", user=user
+    ) as agent:
+        await agent.abulk_update_state(config, batches)
 
 
 @router.post("/threads", response_model=Thread, responses={**CONFLICT})
@@ -255,6 +327,8 @@ async def create_thread(
     await session.commit()
 
     if created is not None:
+        if request.supersteps:
+            await _apply_supersteps(thread_id, request.supersteps, metadata, user)
         # Pass metadata explicitly in case the returned row is a partial mock
         return _serialize_thread(created, default_metadata=metadata)
 
@@ -304,6 +378,7 @@ async def list_threads(
 @router.get("/threads/{thread_id}", response_model=Thread, responses={**NOT_FOUND})
 async def get_thread(
     thread_id: str,
+    include: list[str] | None = Query(None, description="Extra fields to populate: ttl, values, interrupts."),
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> Thread:
@@ -327,7 +402,17 @@ async def get_thread(
     if not thread:
         raise HTTPException(404, f"Thread '{thread_id}' not found")
 
-    return _serialize_thread(thread)
+    requested = set(include or ())
+    unknown = sorted(requested - _INCLUDE_OPTIONS)
+    if unknown:
+        raise HTTPException(422, f"Unknown include values: {', '.join(unknown)}")
+
+    result = _serialize_thread(thread)
+    if requested & {"values", "interrupts"}:
+        result.values, result.interrupts = await _thread_state(thread_id, result.metadata, user)
+    if "ttl" in requested:
+        result.ttl = await _thread_ttl_info(session, thread_id)
+    return result
 
 
 @router.patch("/threads/{thread_id}", response_model=Thread, responses={**NOT_FOUND})
@@ -941,6 +1026,7 @@ async def delete_thread(
 
 @router.post("/threads/prune", response_model=ThreadPruneResponse)
 async def prune_threads(
+    request: ThreadPruneRequest | None = None,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> ThreadPruneResponse:
@@ -955,16 +1041,80 @@ async def prune_threads(
     filters = await handle_event(ctx, {})
     auth_filter = build_metadata_filter(ThreadORM.metadata_json, filters)
 
-    deleted, pruned = await prune_expired_threads_for_user(session, user_id=user.identity, auth_filter=auth_filter)
+    if request is not None and request.thread_ids:
+        deleted, pruned = await prune_threads_by_id(
+            session,
+            user_id=user.identity,
+            thread_ids=request.thread_ids,
+            strategy=request.strategy or "delete",
+            auth_filter=auth_filter,
+        )
+    else:
+        deleted, pruned = await prune_expired_threads_for_user(session, user_id=user.identity, auth_filter=auth_filter)
     return ThreadPruneResponse(deleted=deleted, pruned=pruned)
 
 
-@router.post("/threads/search", response_model=list[Thread])
+@router.post("/threads/count")
+async def count_threads(
+    request: ThreadCountRequest,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> int:
+    """Count threads matching the given filters."""
+    ctx = build_auth_context(user, "threads", "search")
+    filters = await handle_event(ctx, request.model_dump())
+
+    stmt = select(func.count()).select_from(ThreadORM).where(ThreadORM.user_id == user.identity)
+    auth_filter = build_metadata_filter(ThreadORM.metadata_json, filters)
+    if auth_filter is not None:
+        stmt = stmt.where(auth_filter)
+    if request.status:
+        stmt = stmt.where(ThreadORM.status == request.status)
+    if request.metadata:
+        stmt = stmt.where(ThreadORM.metadata_json.op("@>")(request.metadata))
+
+    return int(await session.scalar(stmt) or 0)
+
+
+@router.post("/threads/{thread_id}/copy", response_model=Thread, responses={**NOT_FOUND})
+async def copy_thread(
+    thread_id: str,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> Thread:
+    """Fork a thread: new id, same metadata and full checkpoint lineage."""
+    ctx = build_auth_context(user, "threads", "create")
+    await handle_event(ctx, {"thread_id": thread_id})
+
+    source = await session.scalar(
+        select(ThreadORM).where(ThreadORM.thread_id == thread_id, ThreadORM.user_id == user.identity)
+    )
+    if not source:
+        raise HTTPException(404, f"Thread '{thread_id}' not found")
+
+    now = datetime.now(UTC)
+    target = ThreadORM(
+        thread_id=str(uuid4()),
+        user_id=user.identity,
+        status="idle",
+        metadata_json=dict(source.metadata_json or {}),
+        created_at=now,
+        updated_at=now,
+    )
+    session.add(target)
+    await session.commit()
+
+    await copy_thread_checkpoints(db_manager.lg_pool, thread_id, target.thread_id)
+
+    return _serialize_thread(target)
+
+
+@router.post("/threads/search", response_model=list[Thread])  # select returns a projected subset
 async def search_threads(
     request: ThreadSearchRequest,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
-) -> list[Thread]:
+) -> list[Thread] | JSONResponse:
     """Search threads with filters.
 
     Filter by status or metadata key-value pairs. Results are paginated via
@@ -990,6 +1140,9 @@ async def search_threads(
         # AssistantService.search_assistants for cross-endpoint consistency.
         stmt = stmt.where(ThreadORM.metadata_json.op("@>")(request.metadata))
 
+    if request.ids:
+        stmt = stmt.where(ThreadORM.thread_id.in_(request.ids))
+
     offset = request.offset or 0
     limit = request.limit if request.limit is not None else effective_search_limit()
     column, asc = _resolve_sort(request)
@@ -1001,7 +1154,8 @@ async def search_threads(
     result = await session.scalars(stmt)
     rows = result.all()
 
-    # Use safe serialization
     threads_models = [_serialize_thread(t) for t in rows]
-
+    if request.select:
+        chosen = set(request.select)
+        return JSONResponse([t.model_dump(mode="json", include=chosen) for t in threads_models])
     return threads_models

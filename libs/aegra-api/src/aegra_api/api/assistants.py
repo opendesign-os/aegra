@@ -11,7 +11,8 @@ Architecture:
 - Service Layer (assistant_service.py): Business logic, validation, orchestration
 """
 
-from fastapi import APIRouter, Body, Depends, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi.responses import JSONResponse
 
 from aegra_api.core.auth_deps import auth_dependency
 from aegra_api.core.orm import Assistant as AssistantORM
@@ -85,7 +86,11 @@ async def search_assistants(
     via `limit` and `offset`.
     """
     column, asc = _resolve_sort(request)
-    return await service.search_assistants(request, sort_column=column, sort_asc=asc)
+    results = await service.search_assistants(request, sort_column=column, sort_asc=asc)
+    if request.select:
+        chosen = set(request.select)
+        return JSONResponse([a.model_dump(mode="json", by_alias=False, include=chosen) for a in results])
+    return results
 
 
 @router.post("/assistants/count", response_model=int)
@@ -141,6 +146,9 @@ async def update_assistant(
 @router.delete("/assistants/{assistant_id}", responses={**NOT_FOUND})
 async def delete_assistant(
     assistant_id: str,
+    delete_threads: bool = Query(
+        False, description="Also delete threads bound to this assistant, with their runs and checkpoints."
+    ),
     service: AssistantService = Depends(get_assistant_service),
 ):
     """Delete an assistant by its ID.
@@ -148,7 +156,7 @@ async def delete_assistant(
     Permanently removes the assistant and all of its versions. This action
     cannot be undone.
     """
-    return await service.delete_assistant(assistant_id)
+    return await service.delete_assistant(assistant_id, delete_threads=delete_threads)
 
 
 @router.post(
@@ -159,7 +167,8 @@ async def delete_assistant(
 )
 async def set_assistant_latest(
     assistant_id: str,
-    version: int = Body(..., embed=True, description="The version number to set as latest"),
+    version: int | None = Query(None, description="The version number to set as latest."),
+    body_version: int | None = Body(None, embed=True, alias="version", description="Same as the query parameter."),
     service: AssistantService = Depends(get_assistant_service),
 ):
     """Pin a specific version as the latest version of an assistant.
@@ -167,7 +176,10 @@ async def set_assistant_latest(
     After calling this endpoint, the assistant will use the specified version's
     configuration when executing runs.
     """
-    return await service.set_assistant_latest(assistant_id, version)
+    resolved = version if version is not None else body_version
+    if resolved is None:
+        raise HTTPException(422, "version is required as a query parameter or in the body")
+    return await service.set_assistant_latest(assistant_id, resolved)
 
 
 @router.post(
@@ -236,4 +248,15 @@ async def get_assistant_subgraphs(
     `recurse=true` to include deeply nested subgraphs, or filter to a single
     namespace.
     """
+    return await service.get_assistant_subgraphs(assistant_id, namespace, recurse)
+
+
+@router.get("/assistants/{assistant_id}/subgraphs/{namespace}", responses={**NOT_FOUND})
+async def get_assistant_subgraphs_by_namespace(
+    assistant_id: str,
+    namespace: str,
+    recurse: bool = Query(False, description="Recursively include nested subgraphs."),
+    service: AssistantService = Depends(get_assistant_service),
+):
+    """Get the subgraphs of an assistant under a single namespace."""
     return await service.get_assistant_subgraphs(assistant_id, namespace, recurse)

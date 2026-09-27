@@ -56,7 +56,14 @@ async def put_store_item(request: StorePutRequest, user: User = Depends(get_curr
 
     store = db_manager.get_store()
 
-    await store.aput(namespace=tuple(scoped_namespace), key=request.key, value=request.value)
+    put_kwargs = {} if request.ttl is None else {"ttl": request.ttl}
+    await store.aput(
+        namespace=tuple(scoped_namespace),
+        key=request.key,
+        value=request.value,
+        index=request.index,
+        **put_kwargs,
+    )
 
     return Response(status_code=204)
 
@@ -67,6 +74,7 @@ async def get_store_item(
     namespace: str | list[str] | None = Query(
         None, description="Namespace path. Use dot-separated string or repeated query params."
     ),
+    refresh_ttl: bool | None = Query(None, description="Refresh the item's TTL on read."),
     user: User = Depends(get_current_user),
 ) -> StoreGetResponse:
     """Get an item from the store by key.
@@ -92,7 +100,8 @@ async def get_store_item(
 
     store = db_manager.get_store()
 
-    item = await store.aget(tuple(scoped_namespace), key)
+    get_kwargs = {} if refresh_ttl is None else {"refresh_ttl": refresh_ttl}
+    item = await store.aget(tuple(scoped_namespace), key, **get_kwargs)
 
     if not item:
         raise HTTPException(404, "Item not found")
@@ -184,6 +193,7 @@ async def search_store_items(
         filter=request.filter,
         limit=limit,
         offset=offset,
+        **({} if request.refresh_ttl is None else {"refresh_ttl": request.refresh_ttl}),
     )
 
     items = [StoreItem(key=r.key, value=r.value, namespace=list(r.namespace)) for r in results]

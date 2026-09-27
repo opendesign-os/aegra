@@ -37,6 +37,12 @@ description: "What Aegra supports today, what's coming soon, and what's not yet 
 |:--|:--|:--|
 | Background runs | Supported | Non-blocking execution with polling. |
 | Streaming (7 SSE modes) | Supported | values, updates, messages, messages-tuple, custom, events, and debug. |
+| Thread-level join stream | Supported | `GET /threads/{thread_id}/stream` attaches to the thread's current run. |
+| Stream mode narrowing | Supported | `stream_mode` on the run join stream filters to a subset of the run's modes. |
+| Durability control | Supported | `durability` (`sync`/`async`/`exit`) forwarded to LangGraph; `checkpoint_during` accepted as its deprecated alias. |
+| Resumable streams | Supported | `stream_resumable` gates the replay buffer. `STREAM_RESUMABLE_ALWAYS` (default true) keeps Aegra's always-on behaviour. |
+| Scheduled runs | Supported | `after_seconds` delays a run's start. |
+| Batch runs | Supported | `POST /runs/batch` creates several stateless runs in one call. |
 | SSE reconnection | Supported | Resume interrupted streams from where they left off. |
 | Sync wait | Supported | Block until run completes and return final output. |
 | Subgraph streaming | Supported | Stream events from nested subgraphs. |
@@ -53,6 +59,7 @@ description: "What Aegra supports today, what's coming soon, and what's not yet 
 | Cross-instance cancel | Supported | Cancel propagates via Redis pub/sub to any instance. |
 | Bulk cancel | Supported | `POST /runs/cancel` by status or by thread and run ids; SDK `cancel_many`. |
 | Cancel with `action=rollback` | Coming soon | Both cancel routes accept `interrupt` and `cancel`; `rollback` (cancel, then delete the run and its checkpoints) returns `422` until it lands. |
+| Cancel on disconnect | Supported | `cancel_on_disconnect` on the run join and stream routes. |
 | Job timeout | Supported | Configurable max execution time (default 1 hour). |
 | Postgres fallback | Supported | Workers fall back to DB polling when Redis is unavailable. |
 | Multi-instance SSE | Supported | SSE streams work across instances via Redis broker. |
@@ -65,6 +72,8 @@ description: "What Aegra supports today, what's coming soon, and what's not yet 
 | User approval gates | Supported | Resume or reject interrupted runs. |
 | State editing | Supported | Modify thread state before resuming. |
 | Resume with `update` / `goto` | Supported | `input.respond` folds a state update or directed jump into the resume, one checkpoint. Also available as `command` on v1 run creation. |
+| v2 state commands | Supported | `state.get`, `state.listCheckpoints`, `state.fork`, `agent.getTree`, `input.inject`. |
+| v2 subscription commands | Not yet planned | `subscription.subscribe` / `unsubscribe` / `reconnect` return `not_supported`; channels are fixed per connection in the `/stream/events` body. |
 
 ### Storage
 
@@ -72,6 +81,7 @@ description: "What Aegra supports today, what's coming soon, and what's not yet 
 |:--|:--|:--|
 | Key-value store | Supported | Namespaced key-value storage with listing and search. |
 | Semantic search | Supported | Vector embeddings via pgvector. Configurable embedding models. |
+| Per-item indexing and TTL | Supported | `index` and `ttl` on put, `refresh_ttl` on get and search. |
 
 ### Authentication and authorization
 
@@ -87,8 +97,15 @@ description: "What Aegra supports today, what's coming soon, and what's not yet 
 |:--|:--|:--|
 | Custom routes | Supported | Add FastAPI endpoints alongside the Agent Protocol API. |
 | Shared dependencies | Supported | Load Python modules available to all graphs. |
-| MCP server support | Coming soon | Expose agents as Model Context Protocol servers. |
-| A2A protocol | Coming soon | Agent-to-agent communication protocol support. |
+| MCP server support | Supported | `/mcp/` serves the stateless Streamable HTTP transport; every graph is an MCP tool with its own input schema. |
+| A2A protocol | Supported | `POST /a2a/{assistant_id}` speaks JSON-RPC 2.0: `message/send`, `message/stream` (SSE), `tasks/get`. `tasks/cancel` returns an error, matching upstream. |
+
+### Metrics
+
+| Feature | Status | Notes |
+|:--|:--|:--|
+| Prometheus metrics | Supported | `GET /metrics` serves Prometheus exposition, or JSON via `?format=json`. Off by default: set `ENABLE_PROMETHEUS_METRICS=true`, since the endpoint is deliberately unauthenticated. |
+| Webhook callbacks | Supported | `webhook` on run and cron creation; delivered on terminal status with retry and credential redaction. |
 
 ### Observability
 
@@ -124,7 +141,7 @@ description: "What Aegra supports today, what's coming soon, and what's not yet 
 |:--|:--|:--|
 | RemoteGraph | Not yet planned | Call remote graphs as local subgraphs. |
 | Encryption at rest | Not yet planned | Database-level encryption. Use Postgres TDE or volume encryption. |
-| Webhook callbacks | Not yet planned | Notify external services on run completion. |
+
 | Rate limiting | Not yet planned | Per-user or per-key request throttling. |
 | Multi-org workspaces | Not yet planned | Tenant isolation within a single deployment. |
 

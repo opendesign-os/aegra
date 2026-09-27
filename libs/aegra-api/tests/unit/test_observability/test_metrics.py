@@ -72,11 +72,10 @@ def test_excludes_health_and_docs(
         registry=None,
     )
     mock_instance.instrument.assert_called_once_with(app)
-    mock_instance.expose.assert_called_once_with(
-        app,
-        endpoint="/metrics",
-        include_in_schema=False,
-    )
+    # The endpoint is served by our own route rather than instrumentator.expose()
+    # so it can honour ?format=json alongside the Prometheus exposition.
+    exposed = [r for r in app.routes if getattr(r, "path", None) == "/metrics"]
+    assert exposed and exposed[0].include_in_schema is False
 
 
 def test_logs_when_enabled(

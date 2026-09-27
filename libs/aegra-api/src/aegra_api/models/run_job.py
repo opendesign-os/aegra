@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from aegra_api.models.auth import User
+from aegra_api.models.enums import Durability
 
 if TYPE_CHECKING:
     from aegra_api.core.orm import Run as RunORM
@@ -41,6 +42,8 @@ class RunExecution(BaseModel):
     stream_mode: str | list[str] | None = None
     checkpoint: dict[str, Any] | None = None
     command: dict[str, Any] | None = None
+    durability: Durability | None = None
+    stream_resumable: bool = False
     # When true, stream via the native v3 protocol producer for Agent Protocol v2.
     event_streaming_v2: bool = False
 
@@ -54,6 +57,8 @@ class RunBehavior(BaseModel):
     interrupt_after: str | list[str] | None = None
     multitask_strategy: str | None = None
     subgraphs: bool = False
+    webhook: str | None = None
+    after_seconds: int | None = None
 
 
 class RunJob(BaseModel):

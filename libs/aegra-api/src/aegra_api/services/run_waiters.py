@@ -8,7 +8,7 @@ yields the final JSON result when the run completes.
 import asyncio
 import contextlib
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
 import structlog
@@ -16,6 +16,7 @@ from sqlalchemy import select
 
 from aegra_api.core.orm import Run as RunORM
 from aegra_api.core.orm import _get_session_maker
+from aegra_api.services.broker import broker_manager
 from aegra_api.services.executor import executor
 from aegra_api.settings import settings
 
@@ -92,6 +93,7 @@ async def heartbeat_wait_body(
     user_id: str,
     *,
     timeout: float,
+    is_disconnected: Callable[[], Awaitable[bool]] | None = None,
 ) -> AsyncIterator[bytes]:
     """Async generator that keeps the HTTP connection alive while waiting.
 
@@ -121,6 +123,10 @@ async def heartbeat_wait_body(
             try:
                 await asyncio.wait_for(done.wait(), timeout=interval)
             except TimeoutError:
+                if is_disconnected is not None and await is_disconnected():
+                    logger.info("client disconnected, cancelling run", run_id=run_id)
+                    await broker_manager.request_cancel(run_id, "cancel")
+                    return
                 yield b"\n"
     finally:
         if not task.done():

@@ -305,6 +305,33 @@ async def prune_expired_threads_for_user(
     return total_deleted, total_pruned
 
 
+async def prune_threads_by_id(
+    session: AsyncSession,
+    *,
+    user_id: str,
+    thread_ids: list[str],
+    strategy: str,
+    auth_filter: ColumnElement[bool] | None = None,
+) -> tuple[int, int]:
+    """Apply a prune strategy to named threads regardless of TTL expiry."""
+    stmt = select(ThreadORM.thread_id).where(ThreadORM.thread_id.in_(thread_ids), ThreadORM.user_id == user_id)
+    if auth_filter is not None:
+        stmt = stmt.where(auth_filter)
+    owned = (await session.scalars(stmt)).all()
+
+    deleted = pruned = 0
+    for thread_id in owned:
+        if strategy == "keep_latest":
+            await _prune_checkpoint_history(thread_id)
+            pruned += 1
+        else:
+            await db_manager.get_checkpointer().adelete_thread(thread_id)
+            await session.execute(delete(ThreadORM).where(ThreadORM.thread_id == thread_id))
+            deleted += 1
+    await session.commit()
+    return deleted, pruned
+
+
 class ThreadTTLSweeper:
     """Periodically deletes or compacts expired threads."""
 

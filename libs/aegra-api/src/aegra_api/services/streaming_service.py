@@ -1,7 +1,7 @@
 """Streaming service for orchestrating SSE streaming."""
 
 import asyncio
-from collections.abc import AsyncGenerator, AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator, Sequence
 from typing import Any
 
 import structlog
@@ -13,6 +13,9 @@ from aegra_api.services.event_converter import EventConverter
 from aegra_api.utils import extract_event_sequence
 
 logger = structlog.getLogger(__name__)
+
+
+_CONTROL_MODES = frozenset({"metadata", "end", "error"})
 
 
 class StreamingService:
@@ -43,11 +46,13 @@ class StreamingService:
         run_id: str,
         event_id: str,
         raw_event: Any,
+        *,
+        resumable: bool = True,
     ) -> None:
         """Put an event into the run's broker for live consumers and replay storage."""
         broker = broker_manager.get_or_create_broker(run_id)
         self._next_event_counter(run_id, event_id)
-        await broker.put(event_id, raw_event)
+        await broker.put(event_id, raw_event, resumable=resumable)
 
     async def signal_run_cancelled(self, run_id: str) -> None:
         """Signal that a run was cancelled.
@@ -85,6 +90,7 @@ class StreamingService:
         self,
         run: Run,
         last_event_id: str | None = None,
+        stream_mode: Sequence[str] | None = None,
     ) -> AsyncGenerator[str, None]:
         """Stream run execution with unified producer-consumer pattern.
 
@@ -94,13 +100,14 @@ class StreamingService:
         effects on the broker.
         """
         run_id = run.run_id
+        allowed = frozenset(stream_mode) if stream_mode else None
         try:
             # Replay stored events first
             last_sent_sequence = 0
             if last_event_id:
                 last_sent_sequence = extract_event_sequence(last_event_id)
 
-            async for event_id, sse_event in self._replay_stored_events(run_id, last_event_id):
+            async for event_id, sse_event in self._replay_stored_events(run_id, last_event_id, allowed):
                 # Track the highest replayed sequence for live dedup
                 replayed_seq = extract_event_sequence(event_id)
                 if replayed_seq > last_sent_sequence:
@@ -108,7 +115,7 @@ class StreamingService:
                 yield sse_event
 
             # Stream live events if run is still active
-            async for sse_event in self._stream_live_events(run, last_sent_sequence):
+            async for sse_event in self._stream_live_events(run, last_sent_sequence, allowed):
                 yield sse_event
 
         except asyncio.CancelledError:
@@ -124,7 +131,17 @@ class StreamingService:
             logger.exception("stream execution failed", run_id=run_id)
             yield create_error_event({"error": type(e).__name__, "message": "execution failed"})
 
-    async def _replay_stored_events(self, run_id: str, last_event_id: str | None) -> AsyncIterator[tuple[str, str]]:
+    def _allowed(self, raw_event: Any, allowed: frozenset[str] | None) -> bool:
+        if allowed is None:
+            return True
+        mode = self.event_converter.event_mode(raw_event)
+        if mode is None:
+            return True
+        return mode in _CONTROL_MODES or mode in allowed
+
+    async def _replay_stored_events(
+        self, run_id: str, last_event_id: str | None, allowed: frozenset[str] | None = None
+    ) -> AsyncIterator[tuple[str, str]]:
         """Replay stored events from the broker's replay buffer.
 
         Yields (event_id, sse_event) tuples so the caller can track
@@ -134,11 +151,15 @@ class StreamingService:
         stored_events = await broker.replay(last_event_id)
 
         for event_id, raw_event in stored_events:
+            if not self._allowed(raw_event, allowed):
+                continue
             sse_event = await self._convert_raw_to_sse(event_id, raw_event)
             if sse_event:
                 yield event_id, sse_event
 
-    async def _stream_live_events(self, run: Run, last_sent_sequence: int) -> AsyncIterator[str]:
+    async def _stream_live_events(
+        self, run: Run, last_sent_sequence: int, allowed: frozenset[str] | None = None
+    ) -> AsyncIterator[str]:
         """Stream live events from broker."""
         run_id = run.run_id
         broker = broker_manager.get_broker(run_id)
@@ -156,6 +177,9 @@ class StreamingService:
             # Skip duplicates that were already replayed
             current_sequence = extract_event_sequence(event_id)
             if current_sequence <= last_sent_sequence:
+                continue
+            if not self._allowed(raw_event, allowed):
+                last_sent_sequence = current_sequence
                 continue
 
             sse_event = await self._convert_raw_to_sse(event_id, raw_event)

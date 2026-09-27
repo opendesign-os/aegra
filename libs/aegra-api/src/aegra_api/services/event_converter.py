@@ -27,6 +27,12 @@ class EventConverter:
         stream_mode, payload, namespace = self._parse_raw_event(raw_event)
         return self._create_sse_event(stream_mode, payload, event_id, namespace)
 
+    def event_mode(self, raw_event: Any) -> str | None:
+        if not isinstance(raw_event, tuple):
+            return None
+        mode, _payload, _namespace = self._parse_raw_event(raw_event)
+        return mode if isinstance(mode, str) else None
+
     def _parse_raw_event(self, raw_event: Any) -> tuple[str, Any, list[str] | None]:
         """
         Parse raw event into (stream_mode, payload, namespace).

@@ -5,11 +5,15 @@ When enabled, exposes a ``/metrics`` endpoint with standard HTTP and
 Python runtime metrics in Prometheus exposition format.
 """
 
+from typing import Any, Literal
+
 import prometheus_client
 import structlog
-from fastapi import FastAPI
+from fastapi import FastAPI, Query, Response
+from fastapi.responses import JSONResponse
 from prometheus_fastapi_instrumentator import Instrumentator
 
+from aegra_api.core.active_runs import active_runs
 from aegra_api.settings import settings
 
 logger = structlog.getLogger(__name__)
@@ -39,6 +43,21 @@ THREAD_TTL_SWEPT = prometheus_client.Counter(
 
 for _outcome in ("deleted", "pruned", "error"):
     THREAD_TTL_SWEPT.labels(outcome=_outcome)
+
+ACTIVE_RUNS = prometheus_client.Gauge(
+    "aegra_active_runs",
+    "Runs currently executing in this instance.",
+)
+ACTIVE_RUNS.set_function(lambda: len(active_runs))
+
+WORKER_COUNT = prometheus_client.Gauge(
+    "aegra_worker_count",
+    "Workers configured on this instance.",
+)
+JOBS_PER_WORKER = prometheus_client.Gauge(
+    "aegra_jobs_per_worker",
+    "Concurrent jobs each worker accepts.",
+)
 
 
 def setup_prometheus_metrics(
@@ -71,5 +90,34 @@ def setup_prometheus_metrics(
         registry=registry,
     )
     instrumentator.instrument(app)
-    instrumentator.expose(app, endpoint="/metrics", include_in_schema=False)
+    WORKER_COUNT.set(settings.worker.WORKER_COUNT)
+    JOBS_PER_WORKER.set(settings.worker.N_JOBS_PER_WORKER)
+
+    collector_registry = registry or prometheus_client.REGISTRY
+
+    @app.get("/metrics", include_in_schema=False)
+    async def metrics(
+        format: Literal["prometheus", "json"] = Query("prometheus"),
+    ) -> Response:
+        """Prometheus exposition, or the same families as JSON when asked."""
+        if format == "json":
+            return JSONResponse(_as_json(collector_registry))
+        return Response(
+            prometheus_client.generate_latest(collector_registry),
+            media_type=prometheus_client.CONTENT_TYPE_LATEST,
+        )
+
     logger.info("Prometheus metrics enabled at /metrics")
+
+
+def _as_json(registry: prometheus_client.CollectorRegistry) -> dict[str, Any]:
+    """Flatten the registry into {metric: value} / {metric: {labels: value}}."""
+    out: dict[str, Any] = {}
+    for family in registry.collect():
+        for sample in family.samples:
+            if sample.labels:
+                key = ",".join(f"{k}={v}" for k, v in sorted(sample.labels.items()))
+                out.setdefault(sample.name, {})[key] = sample.value
+            else:
+                out[sample.name] = sample.value
+    return out

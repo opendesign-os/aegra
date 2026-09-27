@@ -14,9 +14,11 @@ from fastapi.routing import APIRoute
 from starlette.requests import HTTPConnection
 
 from aegra_api import __version__
+from aegra_api.api.a2a import router as a2a_router
 from aegra_api.api.assistants import router as assistants_router
 from aegra_api.api.crons import router as crons_router
 from aegra_api.api.event_streaming import router as event_streaming_router
+from aegra_api.api.mcp import router as mcp_router
 from aegra_api.api.runs import router as runs_router
 from aegra_api.api.stateless_runs import router as stateless_runs_router
 from aegra_api.api.store import router as store_router
@@ -42,6 +44,7 @@ from aegra_api.services.cron_scheduler import cron_scheduler
 from aegra_api.services.executor import executor
 from aegra_api.services.langgraph_service import get_langgraph_service
 from aegra_api.services.lease_reaper import lease_reaper
+from aegra_api.services.mcp_server import mcp_transport
 from aegra_api.services.thread_ttl import get_thread_ttl_config, thread_ttl_sweeper
 from aegra_api.settings import settings
 from aegra_api.utils.setup_logging import setup_logging
@@ -55,6 +58,8 @@ OPENAPI_TAGS: list[dict[str, Any]] = [
     {"name": "Store", "description": "Persistent key-value and semantic storage available from any thread."},
     {"name": "Event Streaming", "description": "Agent Protocol v2 thread event streaming and commands."},
     {"name": "Health", "description": "Server health checks and service information."},
+    {"name": "MCP", "description": "Model Context Protocol server exposing graphs as tools."},
+    {"name": "A2A", "description": "Agent-to-Agent protocol over JSON-RPC 2.0."},
 ]
 
 setup_logging()
@@ -138,6 +143,9 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     if settings.redis.REDIS_BROKER_ENABLED:
         await lease_reaper.start()
 
+    # MCP transport: stateless streamable HTTP over /mcp/
+    await mcp_transport.start()
+
     # Start cron scheduler (fires due cron jobs)
     if settings.cron.CRON_ENABLED:
         await cron_scheduler.start()
@@ -156,6 +164,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         await cron_scheduler.stop()
     if settings.redis.REDIS_BROKER_ENABLED:
         await lease_reaper.stop()
+    await mcp_transport.stop()
     await executor.stop()
     await broker_manager.stop()
 
@@ -366,6 +375,8 @@ def _include_core_routers(app: FastAPI) -> None:
     app.include_router(crons_router)
     app.include_router(store_router)
     app.include_router(event_streaming_router)
+    app.include_router(mcp_router)
+    app.include_router(a2a_router)
 
     # Attach @auth.on dispatch from the route registry. Routes must opt out
     # explicitly; forgetting the in-body call no longer disables authorization.

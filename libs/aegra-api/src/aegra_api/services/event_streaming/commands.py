@@ -24,6 +24,15 @@ from aegra_api.core.orm import Thread as ThreadORM
 from aegra_api.models import User
 from aegra_api.models.runs import RunCreate
 from aegra_api.services.event_streaming.protocol import ErrorCode, build_error, build_success
+from aegra_api.services.event_streaming.state_commands import (
+    _SUBSCRIPTION_COMMANDS,
+    agent_get_tree,
+    input_inject,
+    state_fork,
+    state_get,
+    state_list_checkpoints,
+    subscription_not_supported,
+)
 from aegra_api.services.run_preparation import _prepare_run
 
 logger = structlog.getLogger(__name__)
@@ -73,6 +82,18 @@ async def handle_command(
             return await _run_start(command_id, params, session=session, thread_id=thread_id, user=user)
         if method == "input.respond":
             return await _input_respond(command_id, params, session=session, thread_id=thread_id, user=user)
+        if method == "state.get":
+            return await state_get(command_id, params, session=session, thread_id=thread_id, user=user)
+        if method == "state.listCheckpoints":
+            return await state_list_checkpoints(command_id, params, session=session, thread_id=thread_id, user=user)
+        if method == "agent.getTree":
+            return await agent_get_tree(command_id, params, session=session, thread_id=thread_id, user=user)
+        if method == "state.fork":
+            return await state_fork(command_id, params, session=session, thread_id=thread_id, user=user, start=_start)
+        if method == "input.inject":
+            return await input_inject(command_id, params, session=session, thread_id=thread_id, user=user, start=_start)
+        if method in _SUBSCRIPTION_COMMANDS:
+            return subscription_not_supported(command_id, method)
     except HTTPException as exc:
         return build_error(command_id, _status_to_error_code(exc.status_code), str(exc.detail)), None
     except ValidationError as exc:

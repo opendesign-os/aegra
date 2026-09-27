@@ -11,7 +11,7 @@ from collections.abc import AsyncIterator, Mapping
 from uuid import uuid4
 
 import structlog
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette import EventSourceResponse
@@ -270,6 +270,23 @@ async def stateless_stream_run(
         close_handler=inner_close_handler,
         headers=dict(response.headers),
     )
+
+
+@router.post("/runs/batch", response_model=list[Run], responses={**NOT_FOUND, **CONFLICT})
+async def stateless_create_run_batch(
+    requests: list[RunCreate],
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> list[Run]:
+    """Create a batch of stateless background runs.
+
+    Runs are created sequentially; a failure aborts the batch and the runs
+    already created keep executing, matching the upstream contract.
+    """
+    if not requests:
+        raise HTTPException(422, "batch must contain at least one run")
+
+    return [await stateless_create_run(request, user, session) for request in requests]
 
 
 @router.post("/runs", response_model=Run, responses={**NOT_FOUND, **CONFLICT})

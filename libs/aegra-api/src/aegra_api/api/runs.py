@@ -2,12 +2,12 @@
 
 import asyncio
 import contextlib
-from collections.abc import AsyncGenerator, MutableMapping
+from collections.abc import AsyncGenerator, Awaitable, Callable, MutableMapping
 from typing import Any
 
 import structlog
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
+from fastapi.responses import JSONResponse, StreamingResponse
 from redis import RedisError
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,6 +23,7 @@ from aegra_api.core.sse import create_end_event, get_sse_headers, make_sse_respo
 from aegra_api.models import Run, RunCreate, RunsCancel, RunStatus, User
 from aegra_api.models.enums import RunCancellationAction
 from aegra_api.models.errors import CONFLICT, NOT_FOUND, SSE_RESPONSE
+from aegra_api.models.runs import RunSelectField
 from aegra_api.services.broker import broker_manager
 from aegra_api.services.run_preparation import _prepare_run
 from aegra_api.services.run_status import interrupt_unowned_run
@@ -30,6 +31,8 @@ from aegra_api.services.run_waiters import TERMINAL_STATES, encode_output, heart
 from aegra_api.services.streaming_service import streaming_service
 from aegra_api.settings import settings
 from aegra_api.utils.status_compat import validate_run_status
+
+CloseHandler = Callable[[MutableMapping[str, Any]], Awaitable[None]]
 
 router = APIRouter(tags=["Thread Runs"], dependencies=auth_dependency)
 
@@ -168,17 +171,7 @@ async def create_and_stream_run(
     # set on_disconnect="continue" if they want the task to continue.
     cancel_on_disconnect = (request.on_disconnect or "cancel").lower() == "cancel"
 
-    async def _cancel_on_client_close(_msg: MutableMapping[str, Any]) -> None:
-        try:
-            await broker_manager.request_cancel(run_id, "cancel")
-        except (RedisError, OSError):
-            # Swallow infra/transport failures so sse-starlette's task group
-            # tears down cleanly. Programmer errors (TypeError, AttributeError,
-            # ...) propagate. The lease reaper picks up unreachable runs.
-            # OSError covers ConnectionError/TimeoutError (3.11+ subclasses).
-            logger.exception("Failed to cancel run on client disconnect", run_id=run_id)
-
-    close_handler = _cancel_on_client_close if cancel_on_disconnect else None
+    close_handler = _cancel_on_disconnect_handler(run_id) if cancel_on_disconnect else None
 
     return make_sse_response(
         sse_to_bytes(streaming_service.stream_run_execution(run, None)),
@@ -237,9 +230,12 @@ async def list_runs(
     status: str | None = Query(
         None, description="Filter by run status (e.g. pending, running, success, error, interrupted)"
     ),
+    select_fields: list[RunSelectField] | None = Query(
+        None, alias="select", description="Fields to return; all fields when omitted."
+    ),
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
-) -> list[Run]:
+) -> list[Run] | JSONResponse:
     """List runs for a thread.
 
     Returns runs ordered by creation time (newest first). Use `status` to
@@ -261,6 +257,9 @@ async def list_runs(
     rows = result.all()
     runs = [Run.model_validate(r) for r in rows]
     logger.info(f"[list_runs] total={len(runs)} user={user.identity} thread_id={thread_id}")
+    if select_fields:
+        chosen = set(select_fields)
+        return JSONResponse([r.model_dump(mode="json", include=chosen) for r in runs])
     return runs
 
 
@@ -307,6 +306,8 @@ async def update_run(
 async def join_run(
     thread_id: str,
     run_id: str,
+    request: Request,
+    cancel_on_disconnect: bool = Query(False, description="Cancel the run when this client disconnects."),
     user: User = Depends(get_current_user),
 ) -> StreamingResponse:
     """Wait for a run to complete and return its output.
@@ -354,6 +355,7 @@ async def join_run(
             thread_id,
             user.identity,
             timeout=settings.worker.BG_JOB_TIMEOUT_SECS,
+            is_disconnected=request.is_disconnected if cancel_on_disconnect else None,
         ),
         media_type="application/json",
         headers={
@@ -411,12 +413,67 @@ async def wait_for_run(
     )
 
 
+def _cancel_on_disconnect_handler(run_id: str) -> CloseHandler:
+    async def handler(_msg: MutableMapping[str, Any]) -> None:
+        try:
+            await broker_manager.request_cancel(run_id, "cancel")
+        except (RedisError, OSError):
+            # Infra failures must not break sse-starlette teardown; the lease reaper
+            # picks up runs left unreachable. Programmer errors still propagate.
+            logger.exception("Failed to cancel run on client disconnect", run_id=run_id)
+
+    return handler
+
+
+@router.get("/threads/{thread_id}/stream", responses={**SSE_RESPONSE, **NOT_FOUND})
+async def stream_thread(
+    thread_id: str,
+    last_event_id: str | None = Header(None, alias="Last-Event-ID"),
+    stream_modes: list[str] | None = Query(
+        None, description="Narrow the stream to a subset of modes; defaults to the run's own modes."
+    ),
+    user: User = Depends(get_current_user),
+) -> EventSourceResponse:
+    """Stream the thread's current run via SSE.
+
+    Attaches to the thread's active run, or replays the most recent one when
+    none is executing. Reconnect with `Last-Event-ID` to resume.
+    """
+    maker = _get_session_maker()
+    async with maker() as session:
+        thread_owner = await session.scalar(select(ThreadORM.user_id).where(ThreadORM.thread_id == thread_id))
+        if thread_owner != user.identity:
+            raise HTTPException(404, f"Thread '{thread_id}' not found")
+
+        run_orm = await session.scalar(
+            select(RunORM)
+            .where(RunORM.thread_id == thread_id, RunORM.user_id == user.identity)
+            .order_by(RunORM.created_at.desc())
+            .limit(1)
+        )
+        if not run_orm:
+            raise HTTPException(404, f"Thread '{thread_id}' has no runs to stream")
+        run_model = Run.model_validate(run_orm)
+
+    return make_sse_response(
+        sse_to_bytes(streaming_service.stream_run_execution(run_model, last_event_id, stream_modes)),
+        headers={
+            **get_sse_headers(),
+            "Location": f"/threads/{thread_id}/stream",
+            "Content-Location": f"/threads/{thread_id}",
+        },
+    )
+
+
 @router.get("/threads/{thread_id}/runs/{run_id}/stream", responses={**SSE_RESPONSE, **NOT_FOUND})
 async def stream_run(
     thread_id: str,
     run_id: str,
     last_event_id: str | None = Header(None, alias="Last-Event-ID"),
-    _stream_mode: str | None = Query(None, description="Override the stream mode for this connection."),
+    stream_mode: list[str] | None = Query(
+        None, description="Narrow this connection to a subset of the modes the run was created with."
+    ),
+    cancel_on_disconnect: bool = Query(False, description="Cancel the run when this client disconnects."),
     user: User = Depends(get_current_user),
 ) -> EventSourceResponse:
     """Stream an existing run's execution via SSE.
@@ -470,12 +527,13 @@ async def stream_run(
     # Stream active or pending runs via broker
 
     return make_sse_response(
-        sse_to_bytes(streaming_service.stream_run_execution(run_model, last_event_id)),
+        sse_to_bytes(streaming_service.stream_run_execution(run_model, last_event_id, stream_mode)),
         headers={
             **get_sse_headers(),
             "Location": f"/threads/{thread_id}/runs/{run_id}/stream",
             "Content-Location": f"/threads/{thread_id}/runs/{run_id}",
         },
+        close_handler=_cancel_on_disconnect_handler(str(run_id)) if cancel_on_disconnect else None,
     )
 
 

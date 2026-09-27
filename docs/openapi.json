@@ -6,6 +6,58 @@
     "version": "0.10.6"
   },
   "paths": {
+    "/ok": {
+      "get": {
+        "tags": [
+          "Health"
+        ],
+        "summary": "Ok",
+        "description": "Liveness probe matching the LangSmith Deployment contract.",
+        "operationId": "ok_ok_get",
+        "parameters": [
+          {
+            "name": "check_db",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 1,
+              "minimum": 0,
+              "description": "1 also verifies database connectivity.",
+              "default": 0,
+              "title": "Check Db"
+            },
+            "description": "1 also verifies database connectivity."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "boolean"
+                  },
+                  "title": "Response Ok Ok Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/info": {
       "get": {
         "tags": [
@@ -412,6 +464,18 @@
               "type": "string",
               "title": "Assistant Id"
             }
+          },
+          {
+            "name": "delete_threads",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Also delete threads bound to this assistant, with their runs and checkpoints.",
+              "default": false,
+              "title": "Delete Threads"
+            },
+            "description": "Also delete threads bound to this assistant, with their runs and checkpoints."
           }
         ],
         "responses": {
@@ -463,10 +527,27 @@
               "type": "string",
               "title": "Assistant Id"
             }
+          },
+          {
+            "name": "version",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The version number to set as latest.",
+              "title": "Version"
+            },
+            "description": "The version number to set as latest."
           }
         ],
         "requestBody": {
-          "required": true,
           "content": {
             "application/json": {
               "schema": {
@@ -772,6 +853,78 @@
         }
       }
     },
+    "/assistants/{assistant_id}/subgraphs/{namespace}": {
+      "get": {
+        "tags": [
+          "Assistants"
+        ],
+        "summary": "Get Assistant Subgraphs By Namespace",
+        "description": "Get the subgraphs of an assistant under a single namespace.",
+        "operationId": "get_assistant_subgraphs_by_namespace_assistants__assistant_id__subgraphs__namespace__get",
+        "parameters": [
+          {
+            "name": "assistant_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Assistant Id"
+            }
+          },
+          {
+            "name": "namespace",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Namespace"
+            }
+          },
+          {
+            "name": "recurse",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Recursively include nested subgraphs.",
+              "default": false,
+              "title": "Recurse"
+            },
+            "description": "Recursively include nested subgraphs."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentProtocolError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/threads": {
       "get": {
         "tags": [
@@ -861,6 +1014,27 @@
               "type": "string",
               "title": "Thread Id"
             }
+          },
+          {
+            "name": "include",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Extra fields to populate: ttl, values, interrupts.",
+              "title": "Include"
+            },
+            "description": "Extra fields to populate: ttl, values, interrupts."
           }
         ],
         "responses": {
@@ -1554,6 +1728,23 @@
         "summary": "Prune Threads",
         "description": "Immediately apply TTL policies to the caller's expired threads.\n\nThreads whose TTL has expired are deleted (strategy `delete`) or have\ntheir checkpoint history compacted (strategy `keep_latest`). Threads with\nactive runs are skipped and handled once their runs settle.",
         "operationId": "prune_threads_threads_prune_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ThreadPruneRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Request"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -1561,6 +1752,112 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ThreadPruneResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/threads/count": {
+      "post": {
+        "tags": [
+          "Threads"
+        ],
+        "summary": "Count Threads",
+        "description": "Count threads matching the given filters.",
+        "operationId": "count_threads_threads_count_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ThreadCountRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "integer",
+                  "title": "Response Count Threads Threads Count Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/threads/{thread_id}/copy": {
+      "post": {
+        "tags": [
+          "Threads"
+        ],
+        "summary": "Copy Thread",
+        "description": "Fork a thread: new id, same metadata and full checkpoint lineage.",
+        "operationId": "copy_thread_threads__thread_id__copy_post",
+        "parameters": [
+          {
+            "name": "thread_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Thread Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Thread"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentProtocolError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
                 }
               }
             }
@@ -1746,6 +2043,38 @@
               "title": "Status"
             },
             "description": "Filter by run status (e.g. pending, running, success, error, interrupted)"
+          },
+          {
+            "name": "select",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "enum": [
+                      "run_id",
+                      "thread_id",
+                      "assistant_id",
+                      "created_at",
+                      "updated_at",
+                      "status",
+                      "metadata",
+                      "kwargs",
+                      "multitask_strategy"
+                    ],
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Fields to return; all fields when omitted.",
+              "title": "Select"
+            },
+            "description": "Fields to return; all fields when omitted."
           }
         ],
         "responses": {
@@ -2087,6 +2416,18 @@
               "type": "string",
               "title": "Run Id"
             }
+          },
+          {
+            "name": "cancel_on_disconnect",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Cancel the run when this client disconnects.",
+              "default": false,
+              "title": "Cancel On Disconnect"
+            },
+            "description": "Cancel the run when this client disconnects."
           }
         ],
         "responses": {
@@ -2192,6 +2533,99 @@
         }
       }
     },
+    "/threads/{thread_id}/stream": {
+      "get": {
+        "tags": [
+          "Thread Runs"
+        ],
+        "summary": "Stream Thread",
+        "description": "Stream the thread's current run via SSE.\n\nAttaches to the thread's active run, or replays the most recent one when\nnone is executing. Reconnect with `Last-Event-ID` to resume.",
+        "operationId": "stream_thread_threads__thread_id__stream_get",
+        "parameters": [
+          {
+            "name": "thread_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Thread Id"
+            }
+          },
+          {
+            "name": "stream_modes",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Narrow the stream to a subset of modes; defaults to the run's own modes.",
+              "title": "Stream Modes"
+            },
+            "description": "Narrow the stream to a subset of modes; defaults to the run's own modes."
+          },
+          {
+            "name": "Last-Event-ID",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Last-Event-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Server-Sent Events stream",
+            "content": {
+              "application/json": {
+                "schema": {}
+              },
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentProtocolError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/threads/{thread_id}/runs/{run_id}/stream": {
       "get": {
         "tags": [
@@ -2220,22 +2654,37 @@
             }
           },
           {
-            "name": "_stream_mode",
+            "name": "stream_mode",
             "in": "query",
             "required": false,
             "schema": {
               "anyOf": [
                 {
-                  "type": "string"
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
                 },
                 {
                   "type": "null"
                 }
               ],
-              "description": "Override the stream mode for this connection.",
-              "title": " Stream Mode"
+              "description": "Narrow this connection to a subset of the modes the run was created with.",
+              "title": "Stream Mode"
             },
-            "description": "Override the stream mode for this connection."
+            "description": "Narrow this connection to a subset of the modes the run was created with."
+          },
+          {
+            "name": "cancel_on_disconnect",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Cancel the run when this client disconnects.",
+              "default": false,
+              "title": "Cancel On Disconnect"
+            },
+            "description": "Cancel the run when this client disconnects."
           },
           {
             "name": "Last-Event-ID",
@@ -2571,6 +3020,76 @@
         }
       }
     },
+    "/runs/batch": {
+      "post": {
+        "tags": [
+          "Stateless Runs"
+        ],
+        "summary": "Stateless Create Run Batch",
+        "description": "Create a batch of stateless background runs.\n\nRuns are created sequentially; a failure aborts the batch and the runs\nalready created keep executing, matching the upstream contract.",
+        "operationId": "stateless_create_run_batch_runs_batch_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "items": {
+                  "$ref": "#/components/schemas/RunCreate"
+                },
+                "type": "array",
+                "title": "Requests"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/Run"
+                  },
+                  "type": "array",
+                  "title": "Response Stateless Create Run Batch Runs Batch Post"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentProtocolError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Resource state conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentProtocolError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/runs": {
       "post": {
         "tags": [
@@ -2849,6 +3368,57 @@
             }
           }
         }
+      },
+      "get": {
+        "tags": [
+          "Crons"
+        ],
+        "summary": "Get Cron",
+        "description": "Get a cron job by id.",
+        "operationId": "get_cron_runs_crons__cron_id__get",
+        "parameters": [
+          {
+            "name": "cron_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Cron Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CronResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentProtocolError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/runs/crons/search": {
@@ -3016,6 +3586,24 @@
               "title": "Namespace"
             },
             "description": "Namespace path. Use dot-separated string or repeated query params."
+          },
+          {
+            "name": "refresh_ttl",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Refresh the item's TTL on read.",
+              "title": "Refresh Ttl"
+            },
+            "description": "Refresh the item's TTL on read."
           }
         ],
         "responses": {
@@ -3328,6 +3916,105 @@
           },
           "503": {
             "description": "v2 disabled by flag, or runtime too old for native v3 events"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/mcp/": {
+      "get": {
+        "tags": [
+          "MCP"
+        ],
+        "summary": "Mcp Get",
+        "description": "Server-initiated streaming is not offered; the transport is stateless.",
+        "operationId": "mcp_get_mcp__get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "MCP"
+        ],
+        "summary": "Mcp Post",
+        "description": "Send a JSON-RPC 2.0 message to the MCP server.",
+        "operationId": "mcp_post_mcp__post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "MCP"
+        ],
+        "summary": "Mcp Delete",
+        "description": "No session is ever persisted, so there is none to terminate.",
+        "operationId": "mcp_delete_mcp__delete",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/a2a/{assistant_id}": {
+      "post": {
+        "tags": [
+          "A2A"
+        ],
+        "summary": "A2A Rpc",
+        "description": "Dispatch one A2A JSON-RPC envelope against an assistant.",
+        "operationId": "a2a_rpc_a2a__assistant_id__post",
+        "parameters": [
+          {
+            "name": "assistant_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Assistant Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Response A2A Rpc A2A  Assistant Id  Post"
+                }
+              }
+            }
           },
           "422": {
             "description": "Validation Error",
@@ -3741,6 +4428,33 @@
             ],
             "title": "Sort Order",
             "description": "Sort direction (SDK-compatible). Defaults to 'desc' when sort_by is set."
+          },
+          "select": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "assistant_id",
+                    "graph_id",
+                    "name",
+                    "description",
+                    "config",
+                    "context",
+                    "created_at",
+                    "updated_at",
+                    "metadata",
+                    "version"
+                  ]
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Select",
+            "description": "Fields to return; all fields when omitted"
           }
         },
         "type": "object",
@@ -3832,15 +4546,19 @@
       "Body_set_assistant_latest_assistants__assistant_id__latest_post": {
         "properties": {
           "version": {
-            "type": "integer",
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Version",
-            "description": "The version number to set as latest"
+            "description": "Same as the query parameter."
           }
         },
         "type": "object",
-        "required": [
-          "version"
-        ],
         "title": "Body_set_assistant_latest_assistants__assistant_id__latest_post"
       },
       "CronCountRequest": {
@@ -4074,6 +4792,33 @@
               }
             ],
             "title": "Timezone"
+          },
+          "durability": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "sync",
+                  "async",
+                  "exit"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Durability"
+          },
+          "stream_resumable": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stream Resumable"
           }
         },
         "type": "object",
@@ -4278,6 +5023,37 @@
               }
             ],
             "title": "Sort Order"
+          },
+          "select": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "cron_id",
+                    "assistant_id",
+                    "thread_id",
+                    "on_run_completed",
+                    "end_time",
+                    "schedule",
+                    "timezone",
+                    "created_at",
+                    "updated_at",
+                    "user_id",
+                    "payload",
+                    "metadata",
+                    "next_run_date",
+                    "enabled"
+                  ]
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Select",
+            "description": "Fields to return; all when omitted"
           }
         },
         "type": "object",
@@ -4483,6 +5259,33 @@
               }
             ],
             "title": "Timezone"
+          },
+          "durability": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "sync",
+                  "async",
+                  "exit"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Durability"
+          },
+          "stream_resumable": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stream Resumable"
           }
         },
         "type": "object",
@@ -4724,6 +5527,30 @@
             "title": "Context",
             "description": "Context variables available during execution."
           },
+          "metadata": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Metadata",
+            "description": "Metadata assigned to the run at creation."
+          },
+          "multitask_strategy": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Multitask Strategy",
+            "description": "Strategy applied for concurrent runs on the same thread."
+          },
+          "kwargs": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Kwargs",
+            "description": "Execution parameters the run was created with."
+          },
           "user_id": {
             "type": "string",
             "title": "User Id",
@@ -4889,6 +5716,99 @@
             ],
             "title": "Multitask Strategy",
             "description": "Strategy for handling concurrent runs on same thread: 'reject', 'interrupt', 'rollback', or 'enqueue'."
+          },
+          "if_not_exists": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "create",
+                  "reject"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "If Not Exists",
+            "description": "How to handle a missing thread: 'reject' (default) errors, 'create' creates it."
+          },
+          "webhook": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 65536
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Webhook",
+            "description": "URL POSTed with the final run payload once the run reaches a terminal state."
+          },
+          "after_seconds": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "After Seconds",
+            "description": "Seconds to wait before starting the run. Use to schedule a future run."
+          },
+          "durability": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "sync",
+                  "async",
+                  "exit"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Durability",
+            "description": "Checkpoint persistence: 'sync' after each step, 'async' (default) alongside the next step, or 'exit' only when the run ends."
+          },
+          "checkpoint_during": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checkpoint During",
+            "description": "Deprecated alias for 'durability': True maps to 'async', False to 'exit'. Cannot be combined with 'durability'.",
+            "deprecated": true
+          },
+          "stream_resumable": {
+            "type": "boolean",
+            "title": "Stream Resumable",
+            "description": "Persist stream chunks so the stream can be replayed in full after a disconnect.",
+            "default": false
+          },
+          "feedback_keys": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Feedback Keys",
+            "description": "LangSmith-side feedback keys. Accepted for SDK compatibility; inert on Aegra (see docs/feature-support.mdx)."
           },
           "command": {
             "anyOf": [
@@ -5245,6 +6165,37 @@
             "type": "object",
             "title": "Value",
             "description": "Item value (must be a JSON object)"
+          },
+          "index": {
+            "anyOf": [
+              {
+                "type": "boolean",
+                "const": false
+              },
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Index",
+            "description": "Fields to index for semantic search; False disables indexing for this item."
+          },
+          "ttl": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ttl",
+            "description": "Time-to-live in minutes for this item."
           }
         },
         "type": "object",
@@ -5319,6 +6270,18 @@
             "title": "Offset",
             "description": "Results offset",
             "default": 0
+          },
+          "refresh_ttl": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Refresh Ttl",
+            "description": "Refresh the matched items' TTL on read."
           }
         },
         "type": "object",
@@ -5395,6 +6358,69 @@
             "format": "date-time",
             "title": "Updated At",
             "description": "Timestamp when the thread was last updated."
+          },
+          "state_updated_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State Updated At",
+            "description": "Timestamp of the last state write."
+          },
+          "config": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Config",
+            "description": "Config the thread's runs execute with."
+          },
+          "values": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Values",
+            "description": "Current state values of the thread."
+          },
+          "interrupts": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Interrupts",
+            "description": "Pending interrupts keyed by task id."
+          },
+          "ttl": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ThreadTTLInfo"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "TTL info; only present when requested via include=ttl."
           }
         },
         "type": "object",
@@ -5502,6 +6528,51 @@
         "title": "ThreadCommand",
         "description": "Body for ``POST /threads/{thread_id}/commands`` (JSON-RPC style)."
       },
+      "ThreadCountRequest": {
+        "properties": {
+          "metadata": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metadata",
+            "description": "Metadata filters"
+          },
+          "values": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Values",
+            "description": "State values to filter on"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status",
+            "description": "Thread status filter (idle, busy, interrupted, error)"
+          }
+        },
+        "type": "object",
+        "title": "ThreadCountRequest",
+        "description": "Request model for counting threads."
+      },
       "ThreadCreate": {
         "properties": {
           "metadata": {
@@ -5530,7 +6601,7 @@
             "title": "Initial State",
             "description": "LangGraph initial state"
           },
-          "threadId": {
+          "thread_id": {
             "anyOf": [
               {
                 "type": "string",
@@ -5542,10 +6613,10 @@
                 "type": "null"
               }
             ],
-            "title": "Threadid",
+            "title": "Thread Id",
             "description": "Optional client-provided thread ID for idempotent creation. Omit or null to let the server generate a UUID. When set, 1\u2013255 characters and not blank (must fit PostgreSQL btree keys uncompressed)."
           },
-          "ifExists": {
+          "if_exists": {
             "anyOf": [
               {
                 "type": "string"
@@ -5554,7 +6625,7 @@
                 "type": "null"
               }
             ],
-            "title": "Ifexists",
+            "title": "If Exists",
             "description": "Behavior when thread exists: 'raise' (default) or 'do_nothing'",
             "default": "raise"
           },
@@ -5568,6 +6639,22 @@
               }
             ],
             "description": "Per-thread TTL override; requires TTL to be configured server-side or default_ttl set"
+          },
+          "supersteps": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Supersteps",
+            "description": "Checkpoint history to seed the thread with. Each superstep is {\"updates\": [{\"values\": ..., \"as_node\": ...}]}. Requires graph_id or assistant_id in metadata."
           }
         },
         "type": "object",
@@ -5684,6 +6771,44 @@
         ],
         "title": "ThreadList",
         "description": "Response model for listing threads"
+      },
+      "ThreadPruneRequest": {
+        "properties": {
+          "thread_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Thread Ids",
+            "description": "Threads to prune; omit to sweep expired threads"
+          },
+          "strategy": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "delete",
+                  "keep_latest"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Strategy",
+            "description": "'delete' removes the thread, 'keep_latest' compacts its history"
+          }
+        },
+        "type": "object",
+        "title": "ThreadPruneRequest",
+        "description": "Request model for pruning threads."
       },
       "ThreadPruneResponse": {
         "properties": {
@@ -5807,6 +6932,75 @@
             ],
             "title": "Sort Order",
             "description": "Sort direction (SDK-compatible). Defaults to 'desc' when sort_by is set."
+          },
+          "ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ids",
+            "description": "Restrict results to these thread IDs"
+          },
+          "select": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "thread_id",
+                    "created_at",
+                    "updated_at",
+                    "state_updated_at",
+                    "metadata",
+                    "config",
+                    "status",
+                    "values",
+                    "interrupts"
+                  ]
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Select",
+            "description": "Fields to return; all fields when omitted"
+          },
+          "values": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Values",
+            "description": "State values to filter on"
+          },
+          "extract": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Extract",
+            "description": "Alias to JSONB path projections"
           }
         },
         "type": "object",
@@ -6019,6 +7213,47 @@
         "title": "ThreadStateUpdateResponse",
         "description": "Response model for thread state update"
       },
+      "ThreadTTLInfo": {
+        "properties": {
+          "strategy": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Strategy"
+          },
+          "ttl": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ttl"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          }
+        },
+        "type": "object",
+        "title": "ThreadTTLInfo",
+        "description": "TTL state of a thread."
+      },
       "ThreadTTLSpec": {
         "properties": {
           "default_ttl": {
@@ -6070,6 +7305,17 @@
             ],
             "title": "Metadata",
             "description": "Thread metadata to update"
+          },
+          "ttl": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ThreadTTLSpec"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Replace the thread's TTL"
           }
         },
         "type": "object",
@@ -6150,6 +7396,14 @@
     {
       "name": "Health",
       "description": "Server health checks and service information."
+    },
+    {
+      "name": "MCP",
+      "description": "Model Context Protocol server exposing graphs as tools."
+    },
+    {
+      "name": "A2A",
+      "description": "Agent-to-Agent protocol over JSON-RPC 2.0."
     }
   ]
 }

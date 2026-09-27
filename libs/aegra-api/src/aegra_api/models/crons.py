@@ -6,6 +6,7 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from aegra_api.models.enums import Durability
 from aegra_api.settings import settings
 
 # Field length caps. Keep these conservative; cron metadata is small by nature.
@@ -63,9 +64,8 @@ class CronCreate(BaseModel):
     stream_mode: str | list[str] | None = None
     stream_subgraphs: bool | None = None
     timezone: str | None = Field(None, max_length=_TIMEZONE_MAX_LEN)
-    # NOTE: checkpoint_during, stream_resumable, and durability are NOT exposed
-    # here because RunCreate has no matching fields yet. Accepting them silently
-    # drops the value at firing time. Re-add once those land on RunCreate.
+    durability: Durability | None = None
+    stream_resumable: bool | None = None
 
     @model_validator(mode="after")
     def _check(self) -> "CronCreate":
@@ -119,8 +119,8 @@ class CronUpdate(BaseModel):
     stream_mode: str | list[str] | None = None
     stream_subgraphs: bool | None = None
     timezone: str | None = Field(None, max_length=_TIMEZONE_MAX_LEN)
-    # See CronCreate: checkpoint_during/stream_resumable/durability omitted
-    # until RunCreate gains matching fields.
+    durability: Durability | None = None
+    stream_resumable: bool | None = None
 
     @model_validator(mode="after")
     def _check(self) -> "CronUpdate":
@@ -136,6 +136,24 @@ class CronUpdate(BaseModel):
         return self
 
 
+CronSelectField = Literal[
+    "cron_id",
+    "assistant_id",
+    "thread_id",
+    "on_run_completed",
+    "end_time",
+    "schedule",
+    "timezone",
+    "created_at",
+    "updated_at",
+    "user_id",
+    "payload",
+    "metadata",
+    "next_run_date",
+    "enabled",
+]
+
+
 class CronSearchRequest(BaseModel):
     """Request body for searching cron jobs."""
 
@@ -147,6 +165,7 @@ class CronSearchRequest(BaseModel):
     offset: int = Field(0, ge=0)
     sort_by: str | None = None
     sort_order: str | None = None
+    select: list[CronSelectField] | None = Field(None, description="Fields to return; all when omitted")
 
 
 class CronCountRequest(BaseModel):

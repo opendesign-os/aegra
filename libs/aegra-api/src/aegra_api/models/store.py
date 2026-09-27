@@ -1,6 +1,6 @@
 """Store-related Pydantic models for Agent Protocol"""
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -16,6 +16,10 @@ class StorePutRequest(BaseModel):
     namespace: list[str] = Field(..., description="Storage namespace")
     key: str = Field(..., description="Item key")
     value: dict[str, Any] = Field(..., description="Item value (must be a JSON object)")
+    index: Literal[False] | list[str] | None = Field(
+        None, description="Fields to index for semantic search; False disables indexing for this item."
+    )
+    ttl: float | None = Field(None, description="Time-to-live in minutes for this item.")
 
     @field_validator("value", mode="before")
     @classmethod
@@ -53,6 +57,7 @@ class StoreSearchRequest(BaseModel):
         json_schema_extra=search_limit_json_schema_extra,
     )
     offset: int | None = Field(0, ge=0, description="Results offset")
+    refresh_ttl: bool | None = Field(None, description="Refresh the matched items' TTL on read.")
 
     @field_validator("limit")
     @classmethod

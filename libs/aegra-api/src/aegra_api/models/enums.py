@@ -29,3 +29,6 @@ MultitaskStrategy = Literal[
 ]
 
 RunCancellationAction = Literal["cancel", "interrupt"]
+
+Durability = Literal["sync", "async", "exit"]
+IfNotExists = Literal["create", "reject"]

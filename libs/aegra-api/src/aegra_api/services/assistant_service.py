@@ -22,14 +22,16 @@ from uuid import uuid4
 from fastapi import Depends, HTTPException
 from langchain_core.runnables.utils import create_model
 from pydantic import TypeAdapter
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aegra_api.core.auth_deps import get_current_user
 from aegra_api.core.auth_filters import build_metadata_filter
+from aegra_api.core.database import db_manager
 from aegra_api.core.orm import Assistant as AssistantORM
 from aegra_api.core.orm import AssistantVersion as AssistantVersionORM
+from aegra_api.core.orm import Thread as ThreadORM
 from aegra_api.core.orm import get_session
 from aegra_api.models import Assistant, AssistantCreate, AssistantUpdate
 from aegra_api.models.auth import User
@@ -499,8 +501,8 @@ class AssistantService(Authenticated):
         updated_assistant = await self.session.scalar(stmt)
         return to_pydantic(updated_assistant)
 
-    async def delete_assistant(self, assistant_id: str) -> dict:
-        """Delete assistant by ID"""
+    async def delete_assistant(self, assistant_id: str, *, delete_threads: bool = False) -> dict:
+        """Delete assistant by ID, optionally with the threads bound to it."""
         filters = await self._dispatch("delete", {"assistant_id": assistant_id})
 
         stmt = select(AssistantORM).where(
@@ -515,10 +517,28 @@ class AssistantService(Authenticated):
         if not assistant:
             raise HTTPException(404, f"Assistant '{assistant_id}' not found")
 
+        deleted_threads = 0
+        if delete_threads:
+            thread_ids = (
+                await self.session.scalars(
+                    select(ThreadORM.thread_id).where(
+                        ThreadORM.user_id == self.user.identity,
+                        ThreadORM.metadata_json.op("@>")({"assistant_id": assistant_id}),
+                    )
+                )
+            ).all()
+            for thread_id in thread_ids:
+                await db_manager.get_checkpointer().adelete_thread(thread_id)
+            if thread_ids:
+                await self.session.execute(delete(ThreadORM).where(ThreadORM.thread_id.in_(thread_ids)))
+            deleted_threads = len(thread_ids)
+
         await self.session.delete(assistant)
         await self.session.commit()
 
-        return {"status": "deleted"}
+        if not delete_threads:
+            return {"status": "deleted"}
+        return {"status": "deleted", "deleted_threads": deleted_threads}
 
     async def set_assistant_latest(self, assistant_id: str, version: int) -> Assistant:
         """Set the given version as the latest version of an assistant"""

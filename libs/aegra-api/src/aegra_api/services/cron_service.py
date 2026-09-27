@@ -52,6 +52,8 @@ def _build_payload(request: CronCreate | CronUpdate) -> dict[str, Any]:
         "multitask_strategy",
         "stream_mode",
         "stream_subgraphs",
+        "durability",
+        "stream_resumable",
         "timezone",
     ):
         value = getattr(request, field, None)
@@ -381,6 +383,9 @@ class CronService:
         await self.session.delete(cron)
         await self.session.commit()
         logger.info("Deleted cron job", cron_id=cron_id)
+
+    async def get_cron(self, cron_id: str, user_identity: str) -> CronResponse:
+        return _cron_to_response(await self._get_cron_or_404(cron_id, user_identity))
 
     async def search_crons(
         self,

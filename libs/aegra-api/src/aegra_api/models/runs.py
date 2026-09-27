@@ -13,7 +13,9 @@ from pydantic import (
     model_validator,
 )
 
+from aegra_api.models.enums import Durability, IfNotExists
 from aegra_api.utils.status_compat import validate_run_status
+from aegra_api.utils.webhook import WEBHOOK_MAX_LEN, validate_webhook_url
 
 # Constraints for ``RunCreate.metadata`` keys/values, enforced at request
 # time so the OpenAPI schema is honest about what reaches OTEL.  Without
@@ -60,6 +62,38 @@ class RunCreate(BaseModel):
     multitask_strategy: str | None = Field(
         None,
         description="Strategy for handling concurrent runs on same thread: 'reject', 'interrupt', 'rollback', or 'enqueue'.",
+    )
+
+    if_not_exists: IfNotExists | None = Field(
+        None,
+        description="How to handle a missing thread: 'reject' (default) errors, 'create' creates it.",
+    )
+    webhook: str | None = Field(
+        None,
+        max_length=WEBHOOK_MAX_LEN,
+        description="URL POSTed with the final run payload once the run reaches a terminal state.",
+    )
+    after_seconds: int | None = Field(
+        None,
+        ge=0,
+        description="Seconds to wait before starting the run. Use to schedule a future run.",
+    )
+    durability: Durability | None = Field(
+        None,
+        description="Checkpoint persistence: 'sync' after each step, 'async' (default) alongside the next step, or 'exit' only when the run ends.",
+    )
+    checkpoint_during: bool | None = Field(
+        None,
+        deprecated=True,
+        description="Deprecated alias for 'durability': True maps to 'async', False to 'exit'. Cannot be combined with 'durability'.",
+    )
+    stream_resumable: bool = Field(
+        False,
+        description="Persist stream chunks so the stream can be replayed in full after a disconnect.",
+    )
+    feedback_keys: list[str] | None = Field(
+        None,
+        description="LangSmith-side feedback keys. Accepted for SDK compatibility; inert on Aegra (see docs/feature-support.mdx).",
     )
 
     # Human-in-the-loop fields (core HITL functionality)
@@ -130,6 +164,25 @@ class RunCreate(BaseModel):
                 raise ValueError(f"metadata value for key {key!r} exceeds {_METADATA_MAX_VALUE_LEN} characters")
         return metadata
 
+    @field_validator("webhook", mode="after")
+    @classmethod
+    def validate_webhook(cls, value: str | None) -> str | None:
+        return validate_webhook_url(value)
+
+    @model_validator(mode="after")
+    def validate_durability_exclusivity(self) -> Self:
+        if self.checkpoint_during is not None and self.durability is not None:
+            raise ValueError("Cannot specify both 'checkpoint_during' and 'durability' - use 'durability'")
+        return self
+
+    @property
+    def resolved_durability(self) -> Durability | None:
+        if self.durability is not None:
+            return self.durability
+        if self.checkpoint_during is None:
+            return None
+        return "async" if self.checkpoint_during else "exit"
+
     @model_validator(mode="after")
     def validate_input_command_exclusivity(self) -> Self:
         """Ensure input and command are mutually exclusive."""
@@ -168,6 +221,19 @@ class RunsCancel(BaseModel):
         return self
 
 
+RunSelectField = Literal[
+    "run_id",
+    "thread_id",
+    "assistant_id",
+    "created_at",
+    "updated_at",
+    "status",
+    "metadata",
+    "kwargs",
+    "multitask_strategy",
+]
+
+
 class Run(BaseModel):
     """Run entity model
 
@@ -195,6 +261,9 @@ class Run(BaseModel):
     context: dict[str, Any] | None = Field(
         default_factory=dict, description="Context variables available during execution."
     )
+    metadata: dict[str, Any] = Field(default_factory=dict, description="Metadata assigned to the run at creation.")
+    multitask_strategy: str | None = Field(None, description="Strategy applied for concurrent runs on the same thread.")
+    kwargs: dict[str, Any] = Field(default_factory=dict, description="Execution parameters the run was created with.")
     user_id: str = Field(..., description="Identifier of the user who owns this run.")
     created_at: datetime = Field(..., description="Timestamp when the run was created.")
     updated_at: datetime = Field(..., description="Timestamp when the run was last updated.")
@@ -206,6 +275,38 @@ class Run(BaseModel):
         if not isinstance(v, str):
             raise ValueError(f"Status must be a string, got {type(v)}")
         return validate_run_status(v)
+
+    @model_validator(mode="before")
+    @classmethod
+    def derive_execution_fields(cls, data: Any) -> Any:
+        if isinstance(data, dict) or not hasattr(data, "execution_params"):
+            return data
+        params = getattr(data, "execution_params", None)
+        params = params if isinstance(params, dict) else {}
+        execution = params.get("execution") or {}
+        behavior = params.get("behavior") or {}
+        derived = ("metadata", "multitask_strategy", "kwargs")
+        values = {name: getattr(data, name, None) for name in cls.model_fields if name not in derived}
+        values["metadata"] = params.get("run_metadata") or {}
+        values["multitask_strategy"] = behavior.get("multitask_strategy")
+        values["kwargs"] = (
+            {}
+            if not params
+            else {
+                "input": execution.get("input_data"),
+                "config": execution.get("config") or {},
+                "context": execution.get("context") or {},
+                "stream_mode": execution.get("stream_mode"),
+                "interrupt_before": behavior.get("interrupt_before"),
+                "interrupt_after": behavior.get("interrupt_after"),
+                "webhook": behavior.get("webhook"),
+                "after_seconds": behavior.get("after_seconds"),
+                "durability": execution.get("durability"),
+                "stream_resumable": execution.get("stream_resumable", False),
+                "subgraphs": behavior.get("subgraphs", False),
+            }
+        )
+        return values
 
 
 class RunStatus(BaseModel):

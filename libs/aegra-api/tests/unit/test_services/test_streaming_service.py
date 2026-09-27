@@ -54,7 +54,7 @@ class TestStreamingService:
             await service.put_to_broker(run_id, event_id, raw_event)
 
             mock_manager.get_or_create_broker.assert_called_with(run_id)
-            mock_broker.put.assert_awaited_with(event_id, raw_event)
+            mock_broker.put.assert_awaited_with(event_id, raw_event, resumable=True)
             assert service.event_counters[run_id] == 1
 
     async def test_signal_run_cancelled(self) -> None:

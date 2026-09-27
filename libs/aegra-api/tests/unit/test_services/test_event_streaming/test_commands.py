@@ -443,7 +443,7 @@ class TestUnknownParamKeys:
 
 class TestErrors:
     async def test_unknown_method_is_unknown_command(self, user: User) -> None:
-        resp, run_id = await _dispatch({"id": 3, "method": "agent.getTree", "params": {}}, user)
+        resp, run_id = await _dispatch({"id": 3, "method": "agent.noSuchMethod", "params": {}}, user)
         assert resp["error"] == "unknown_command"
         assert run_id is None
 

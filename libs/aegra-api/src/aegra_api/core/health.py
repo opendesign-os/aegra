@@ -2,7 +2,7 @@
 
 import contextlib
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
@@ -31,6 +31,17 @@ class InfoResponse(BaseModel):
     description: str = Field(..., description="Service description.")
     status: str = Field(..., description="Current service status.")
     flags: dict = Field(..., description="Feature flags indicating available capabilities.")
+
+
+@router.get("/ok")
+async def ok(
+    check_db: int = Query(0, ge=0, le=1, description="1 also verifies database connectivity."),
+) -> dict[str, bool]:
+    """Liveness probe matching the LangSmith Deployment contract."""
+    if check_db:
+        async with db_manager.get_engine().connect() as conn:
+            await conn.execute(text("SELECT 1"))
+    return {"ok": True}
 
 
 @router.get("/info", response_model=InfoResponse)

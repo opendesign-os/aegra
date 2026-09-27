@@ -1,4 +1,4 @@
-"""Webhook URL validation shared by run and cron request models."""
+"""Webhook URL validation and redaction shared by run and cron models."""
 
 from __future__ import annotations
 
@@ -8,11 +8,6 @@ WEBHOOK_MAX_LEN = 65536
 
 
 def validate_webhook_url(value: str | None) -> str | None:
-    """Reject malformed or non-http(s) webhook URLs at the API boundary.
-
-    Records store ``webhook`` verbatim, so this is the SSRF entry point for
-    every caller that later delivers to it.
-    """
     if value is None:
         return None
     parsed = urlparse(value)
@@ -24,9 +19,13 @@ def validate_webhook_url(value: str | None) -> str | None:
 
 
 def mask_webhook_credentials(url: str) -> str:
-    """Strip userinfo from a webhook URL before surfacing it back to clients."""
-    parsed = urlparse(url)
-    if "@" not in parsed.netloc:
+    try:
+        parsed = urlparse(url)
+    except ValueError:
         return url
-    host = parsed.netloc.rsplit("@", 1)[1]
-    return urlunparse(parsed._replace(netloc=host))
+    if not parsed.hostname:
+        return url
+    netloc = parsed.hostname
+    if parsed.port is not None:
+        netloc = f"{netloc}:{parsed.port}"
+    return urlunparse(parsed._replace(netloc=netloc))

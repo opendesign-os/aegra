@@ -23,6 +23,12 @@ from aegra_api.core.orm import Thread as ThreadORM
 from aegra_api.models import Run, RunCreate, RunStatus, User
 
 
+def _make_disconnect_request(disconnected: bool = False) -> MagicMock:
+    request = MagicMock()
+    request.is_disconnected = AsyncMock(return_value=disconnected)
+    return request
+
+
 class TestRunsEndpoints:
     """Test standard run endpoints."""
 
@@ -258,6 +264,7 @@ class TestRunsEndpoints:
             limit=10,
             offset=0,
             status=None,
+            select_fields=None,
             user=mock_user,
             session=mock_session,
         )
@@ -491,7 +498,9 @@ class TestRunsEndpoints:
         mock_maker = MagicMock(return_value=ctx)
 
         with patch("aegra_api.api.runs._get_session_maker", return_value=mock_maker):
-            response = await join_run("thread-1", "run-1", mock_user)
+            response = await join_run(
+                "thread-1", "run-1", _make_disconnect_request(), cancel_on_disconnect=False, user=mock_user
+            )
 
         # join_run now returns StreamingResponse; consume body to get JSON
         assert response.media_type == "application/json"
@@ -534,7 +543,9 @@ class TestRunsEndpoints:
             mock_settings.app.KEEPALIVE_INTERVAL_SECS = 5
             mock_settings.worker.BG_JOB_TIMEOUT_SECS = 3600
 
-            response = await join_run("thread-1", "run-1", mock_user)
+            response = await join_run(
+                "thread-1", "run-1", _make_disconnect_request(), cancel_on_disconnect=False, user=mock_user
+            )
 
         assert isinstance(response, StreamingResponse)
         assert response.media_type == "application/json"

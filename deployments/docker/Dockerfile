@@ -48,6 +48,7 @@ RUN uv pip install --system --compile-bytecode --no-deps .
 # Final, minimal runtime image
 # -----------------------------
 FROM base AS final
+ARG PY_VERSION
 
 # Install only minimal runtime libs
 RUN apt-get update && apt-get install -y --no-install-recommends \

@@ -22,6 +22,12 @@ from aegra_api.services.run_waiters import heartbeat_wait_body, read_run_result
 # ---------------------------------------------------------------------------
 
 
+def _make_disconnect_request(disconnected: bool = False) -> MagicMock:
+    request = MagicMock()
+    request.is_disconnected = AsyncMock(return_value=disconnected)
+    return request
+
+
 def _make_session_maker(session: AsyncMock) -> MagicMock:
     """Build a mock async_sessionmaker that always yields the given session."""
     ctx = MagicMock()
@@ -341,7 +347,9 @@ class TestJoinRunEndpoint:
         user = User(identity="test-user", scopes=[])
 
         with patch("aegra_api.api.runs._get_session_maker", return_value=maker):
-            response = await join_run("thread-1", "run-1", user)
+            response = await join_run(
+                "thread-1", "run-1", _make_disconnect_request(), cancel_on_disconnect=False, user=user
+            )
 
         assert response.media_type == "application/json"
         body = b""
@@ -359,7 +367,7 @@ class TestJoinRunEndpoint:
 
         with patch("aegra_api.api.runs._get_session_maker", return_value=maker):
             with pytest.raises(Exception) as exc_info:
-                await join_run("thread-1", "run-1", user)
+                await join_run("thread-1", "run-1", _make_disconnect_request(), cancel_on_disconnect=False, user=user)
             assert exc_info.value.status_code == 404
 
     @pytest.mark.asyncio
@@ -401,7 +409,9 @@ class TestJoinRunEndpoint:
             mock_settings.app.KEEPALIVE_INTERVAL_SECS = 5
             mock_settings.worker.BG_JOB_TIMEOUT_SECS = 3600
 
-            response = await join_run("thread-1", "run-1", user)
+            response = await join_run(
+                "thread-1", "run-1", _make_disconnect_request(), cancel_on_disconnect=False, user=user
+            )
 
         assert isinstance(response, StreamingResponse)
         assert response.media_type == "application/json"
@@ -417,7 +427,9 @@ class TestJoinRunEndpoint:
         user = User(identity="test-user", scopes=[])
 
         with patch("aegra_api.api.runs._get_session_maker", return_value=maker):
-            response = await join_run("thread-1", "run-1", user)
+            response = await join_run(
+                "thread-1", "run-1", _make_disconnect_request(), cancel_on_disconnect=False, user=user
+            )
 
         body = b""
         async for chunk in response.body_iterator:

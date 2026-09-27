@@ -60,6 +60,10 @@ def _make_request() -> MagicMock:
     request.multitask_strategy = None
     request.stream_subgraphs = False
     request.metadata = None
+    request.resolved_durability = None
+    request.stream_resumable = False
+    request.webhook = None
+    request.after_seconds = None
     return request
 
 

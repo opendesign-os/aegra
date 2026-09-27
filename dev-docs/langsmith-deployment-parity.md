@@ -135,3 +135,30 @@ Everything below is MIT or Apache-2.0 and already available.
 | `/metrics` | `prometheus-client` 0.26.0 | ASGI exposition |
 | `webhook` | `httpx` (existing dep) | post-run delivery with retry |
 | WebSocket event transport | `websockets` (existing transitive dep) | upgrade on `/stream/events` |
+
+
+## Status after the alignment pass
+
+Regenerated `docs/openapi.json` (49 paths) diffed against `langgraph-api` 0.15.1:
+
+- **Field-level gaps: zero.** Every remaining difference on a shared endpoint is an
+  Aegra extension (a superset), not a missing upstream field.
+- **Endpoint gaps: none.** `/mcp/` and `/a2a/{assistant_id}` both serve. `GET /docs`
+  and `GET /metrics` show as missing only because FastAPI and the Prometheus
+  instrumentator keep them out of the generated schema.
+
+MCP runs on the `mcp` SDK's stateless Streamable HTTP transport, pinned below 2.0
+because 2.x swaps httpx for httpx2. A2A is served from hand-written Pydantic
+models: `a2a-sdk` ships protobuf/gRPC types, which are a different wire shape
+from the JSON-RPC form this endpoint speaks.
+
+Two fields are deliberately rejected rather than served, because Aegra keeps thread
+state in checkpoints instead of denormalising it onto the thread row:
+`ThreadSearchRequest.values` and `ThreadSearchRequest.extract` both return 422 with
+a message pointing at `/threads/{thread_id}/state`.
+
+`subscription.subscribe` / `unsubscribe` / `reconnect` answer `not_supported`:
+channels are fixed per connection in the `/stream/events` request body.
+
+Verified against the Docker stack (Redis broker, 3 workers) with
+`scratchpad/verify_api.py`: 90 checks, 0 failures.

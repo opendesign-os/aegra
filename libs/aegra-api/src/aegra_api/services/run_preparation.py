@@ -283,6 +283,8 @@ async def _prepare_run(
             stream_mode=request.stream_mode,
             checkpoint=_resolve_checkpoint(request),
             command=request.command,
+            durability=request.resolved_durability,
+            stream_resumable=request.stream_resumable,
             event_streaming_v2=event_streaming_v2,
         ),
         behavior=RunBehavior(
@@ -290,6 +292,8 @@ async def _prepare_run(
             interrupt_after=request.interrupt_after,
             multitask_strategy=request.multitask_strategy,
             subgraphs=request.stream_subgraphs or False,
+            webhook=request.webhook,
+            after_seconds=request.after_seconds,
         ),
         run_metadata=request.metadata or {},
     )

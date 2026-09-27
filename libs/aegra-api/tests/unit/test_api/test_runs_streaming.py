@@ -372,6 +372,8 @@ class TestRunsStreamingEndpoints:
                 thread_id,
                 run_id,
                 last_event_id="evt-1",
+                stream_mode=None,
+                cancel_on_disconnect=False,
                 user=mock_user,
             )
 
@@ -391,21 +393,14 @@ class TestRunsStreamingEndpoints:
             ("success", None),  # terminal branch
         ],
     )
-    async def test_stream_run_never_wires_close_handler(
+    async def test_stream_run_omits_close_handler_by_default(
         self,
         mock_user: User,
         mock_session: AsyncMock,
         run_status: str,
         last_event_id: str | None,
     ) -> None:
-        """``stream_run`` (reconnect) must never wire ``client_close_handler_callable``.
-
-        The endpoint is a reconnect-style join: multiple clients can attach
-        to the same run. A single client disconnecting must NOT cancel the
-        shared run — hence the endpoint deliberately omits the close handler.
-        Covers both the terminal branch (early return with ``end`` event) and
-        the active branch (live streaming via broker).
-        """
+        """Reconnect-style join: one client leaving must not cancel a shared run."""
         thread_id = "test-thread"
         run_id = "run-42"
 
@@ -435,6 +430,8 @@ class TestRunsStreamingEndpoints:
                 thread_id,
                 run_id,
                 last_event_id=last_event_id,
+                stream_mode=None,
+                cancel_on_disconnect=False,
                 user=mock_user,
             )
 
@@ -449,7 +446,7 @@ class TestRunsStreamingEndpoints:
             patch("aegra_api.api.runs._get_session_maker", return_value=_make_session_maker(mock_session)),
             pytest.raises(HTTPException) as exc,
         ):
-            await stream_run("t", "r", user=mock_user)
+            await stream_run("t", "r", stream_mode=None, cancel_on_disconnect=False, user=mock_user)
 
         assert exc.value.status_code == 404
 

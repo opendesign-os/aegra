@@ -31,6 +31,7 @@ from langgraph.pregel.debug import CheckpointPayload, TaskResultPayload
 from pydantic import ValidationError
 from pydantic.v1 import ValidationError as ValidationErrorLegacy
 
+from aegra_api.models.enums import Durability
 from aegra_api.utils.run_utils import _filter_context_by_schema
 
 logger = structlog.getLogger(__name__)
@@ -121,6 +122,7 @@ async def stream_graph_events(
     stream_mode: list[str],
     context: dict[str, Any] | None = None,
     subgraphs: bool = False,
+    durability: Durability | None = None,
     output_keys: list[str] | None = None,
     on_checkpoint: Callable[[CheckpointPayload | None], None] = lambda _: None,
     on_task_result: Callable[[TaskResultPayload], None] = lambda _: None,
@@ -204,6 +206,7 @@ async def stream_graph_events(
                 version="v2",
                 stream_mode=list(stream_modes_set),
                 subgraphs=subgraphs,
+                durability=durability,
                 **interrupt_kwargs,
             )
         ) as stream:
@@ -291,6 +294,7 @@ async def stream_graph_events(
                 stream_mode=list(stream_modes_set),
                 output_keys=output_keys,
                 subgraphs=subgraphs,
+                durability=durability,
                 **interrupt_kwargs,
             )
         ) as stream:

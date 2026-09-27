@@ -212,7 +212,7 @@ class TestCommandRoute:
     def test_unknown_command_returns_error_envelope_on_200(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Protocol errors ride HTTP 200 so envelope-parsing clients see the code."""
         client = TestClient(_make_app(monkeypatch))
-        resp = client.post("/threads/t1/commands", json={"id": 1, "method": "agent.getTree", "params": {}})
+        resp = client.post("/threads/t1/commands", json={"id": 1, "method": "agent.noSuchMethod", "params": {}})
         assert resp.status_code == 200
         assert resp.json()["error"] == "unknown_command"
 

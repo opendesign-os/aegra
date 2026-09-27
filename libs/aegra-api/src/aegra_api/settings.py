@@ -463,6 +463,9 @@ class EventStreamingSettings(EnvBase):
 
     FF_V2_EVENT_STREAMING: bool = True
 
+    # True keeps Aegra's always-on replay; false gates it on the request's stream_resumable.
+    STREAM_RESUMABLE_ALWAYS: bool = True
+
 
 class Settings:
     """Container object that instantiates all application settings groups."""

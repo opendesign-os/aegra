@@ -15,6 +15,7 @@ from aegra_api.core.active_runs import active_runs
 from aegra_api.core.auth_ctx import with_auth_ctx
 from aegra_api.core.redis_manager import redis_manager
 from aegra_api.models.run_job import RunJob
+from aegra_api.services import webhook_delivery
 from aegra_api.services.broker import broker_manager
 from aegra_api.services.event_streaming.native_stream import stream_native_v3_events
 from aegra_api.services.graph_streaming import stream_graph_events
@@ -50,29 +51,34 @@ async def execute_run(job: RunJob) -> None:
     finalized = False
 
     try:
+        if job.behavior.after_seconds:
+            await asyncio.sleep(job.behavior.after_seconds)
+
         if not await start_run(run_id, user_id=user_id):
             logger.info("Run became terminal before execution started", run_id=run_id)
             return
 
         final_output = await _stream_graph(job)
 
-        if final_output.has_interrupt:
-            finalized = await finalize_run(
-                run_id,
-                thread_id,
-                user_id=user_id,
-                status="interrupted",
-                thread_status="interrupted",
-                output=final_output.data,
-            )
-        else:
-            finalized = await finalize_run(
-                run_id,
-                thread_id,
-                user_id=user_id,
-                status="success",
-                thread_status="idle",
-                output=final_output.data,
+        status = "interrupted" if final_output.has_interrupt else "success"
+        finalized = await finalize_run(
+            run_id,
+            thread_id,
+            user_id=user_id,
+            status=status,
+            thread_status="interrupted" if final_output.has_interrupt else "idle",
+            output=final_output.data,
+        )
+        if finalized:
+            webhook_delivery.schedule(
+                job.behavior.webhook,
+                {
+                    "run_id": run_id,
+                    "thread_id": thread_id,
+                    "assistant_id": job.identity.graph_id,
+                    "status": status,
+                    "output": final_output.data,
+                },
             )
 
     except asyncio.CancelledError:
@@ -195,6 +201,10 @@ async def _stream_graph(job: RunJob) -> _GraphResult:
     return result
 
 
+def _replay_enabled(job: RunJob) -> bool:
+    return settings.event_streaming.STREAM_RESUMABLE_ALWAYS or job.execution.stream_resumable
+
+
 async def _stream_legacy(
     job: RunJob,
     graph: Any,
@@ -205,6 +215,7 @@ async def _stream_legacy(
 ) -> None:
     """Stream via the v1 producer (legacy SSE endpoints)."""
     run_id = job.identity.run_id
+    resumable = _replay_enabled(job)
     async for event_type, event_data in stream_graph_events(
         graph=graph,
         input_data=execution_input,
@@ -212,11 +223,12 @@ async def _stream_legacy(
         stream_mode=stream_modes,
         context=job.execution.context,
         subgraphs=job.behavior.subgraphs,
+        durability=job.execution.durability,
         on_checkpoint=lambda _: None,
         on_task_result=lambda _: None,
     ):
         event_id = await broker_manager.allocate_event_id(run_id)
-        await streaming_service.put_to_broker(run_id, event_id, (event_type, event_data))
+        await streaming_service.put_to_broker(run_id, event_id, (event_type, event_data), resumable=resumable)
 
         if isinstance(event_data, dict) and "__interrupt__" in event_data:
             result.has_interrupt = True
@@ -238,6 +250,7 @@ async def _stream_native_v2(
     state is the last ``values`` event's ``params.data``.
     """
     run_id = job.identity.run_id
+    resumable = _replay_enabled(job)
     async for method, event in stream_native_v3_events(
         graph=graph,
         input_data=execution_input,
@@ -245,7 +258,7 @@ async def _stream_native_v2(
         context=job.execution.context,
     ):
         event_id = await broker_manager.allocate_event_id(run_id)
-        await streaming_service.put_to_broker(run_id, event_id, (method, event))
+        await streaming_service.put_to_broker(run_id, event_id, (method, event), resumable=resumable)
 
         params = event.get("params", {})
         data = params.get("data")

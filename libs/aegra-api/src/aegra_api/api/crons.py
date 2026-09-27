@@ -14,6 +14,7 @@ from uuid import uuid4
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -183,18 +184,35 @@ async def delete_cron(
 # ---------------------------------------------------------------------------
 
 
+@router.get("/runs/crons/{cron_id}", response_model=CronResponse, responses={**NOT_FOUND})
+async def get_cron(
+    cron_id: str,
+    user: User = Depends(get_current_user),
+    service: CronService = Depends(get_cron_service),
+) -> CronResponse:
+    """Get a cron job by id."""
+    ctx = build_auth_context(user, "crons", "read")
+    await handle_event(ctx, {"cron_id": cron_id})
+
+    return await service.get_cron(cron_id, user.identity)
+
+
 @router.post("/runs/crons/search", response_model=list[CronResponse])
 async def search_crons(
     request: CronSearchRequest,
     user: User = Depends(get_current_user),
     service: CronService = Depends(get_cron_service),
-) -> list[CronResponse]:
+) -> list[CronResponse] | JSONResponse:
     """Search cron jobs with filters and pagination."""
     ctx = build_auth_context(user, "crons", "search")
     value = request.model_dump(exclude_none=True)
     await handle_event(ctx, value)
 
-    return await service.search_crons(request, user.identity)
+    results = await service.search_crons(request, user.identity)
+    if request.select:
+        chosen = set(request.select)
+        return JSONResponse([c.model_dump(mode="json", include=chosen) for c in results])
+    return results
 
 
 # ---------------------------------------------------------------------------
