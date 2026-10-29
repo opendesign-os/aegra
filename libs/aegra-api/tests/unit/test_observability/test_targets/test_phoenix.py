@@ -3,6 +3,7 @@
 from unittest.mock import patch
 
 from aegra_api.observability.targets.phoenix import PhoenixTarget
+from tests.fixtures.test_helpers import exporter_headers
 
 
 class TestPhoenixTarget:
@@ -37,7 +38,7 @@ class TestPhoenixTarget:
             exporter = target.get_exporter()
 
             assert exporter._endpoint == custom_endpoint
-            assert exporter._headers == {}
+            assert exporter_headers(exporter) == {}
 
     def test_get_exporter_with_api_key(self):
         """Test that API key is correctly added as Bearer token."""
@@ -51,4 +52,4 @@ class TestPhoenixTarget:
             exporter = target.get_exporter()
 
             # Проверяем новый формат заголовка
-            assert exporter._headers == {"authorization": f"Bearer {api_key}"}
+            assert exporter_headers(exporter) == {"authorization": f"Bearer {api_key}"}

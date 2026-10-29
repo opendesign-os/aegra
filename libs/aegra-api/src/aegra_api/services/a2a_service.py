@@ -1,8 +1,8 @@
-"""Dispatch A2A JSON-RPC methods onto Aegra runs.
+"""Map A2A tasks onto Aegra runs.
 
-`message.contextId` is the LangGraph thread; an Aegra run id is the A2A task id.
-Only text and data parts are carried: text becomes a `messages` entry, data is
-merged into the graph input.
+Models, errors and request envelopes all come from ``a2a.compat.v0_3.types`` —
+the SDK's JSON-RPC shapes. ``message.contextId`` is the LangGraph thread and an
+Aegra run id is the A2A task id.
 """
 
 from __future__ import annotations
@@ -13,19 +13,13 @@ from typing import Any
 from uuid import uuid4
 
 import structlog
+from a2a.compat.v0_3 import types as a2a
 from sqlalchemy import select
 
 from aegra_api.core.orm import Run as RunORM
 from aegra_api.core.orm import Thread as ThreadORM
 from aegra_api.core.orm import _get_session_maker
 from aegra_api.models import User
-from aegra_api.models.a2a import (
-    A2AMessage,
-    DataPart,
-    Task,
-    TaskStatus,
-    TextPart,
-)
 from aegra_api.models.runs import RunCreate
 from aegra_api.services.executor import executor
 from aegra_api.services.run_preparation import _prepare_run
@@ -33,52 +27,87 @@ from aegra_api.settings import settings
 
 logger = structlog.getLogger(__name__)
 
+TERMINAL_STATES = frozenset(
+    {a2a.TaskState.completed, a2a.TaskState.failed, a2a.TaskState.canceled, a2a.TaskState.rejected}
+)
+
 _RUN_STATUS_TO_TASK_STATE = {
-    "pending": "submitted",
-    "running": "working",
-    "success": "completed",
-    "error": "failed",
-    "timeout": "failed",
-    "interrupted": "input-required",
+    "pending": a2a.TaskState.submitted,
+    "running": a2a.TaskState.working,
+    "success": a2a.TaskState.completed,
+    "error": a2a.TaskState.failed,
+    "timeout": a2a.TaskState.failed,
+    "interrupted": a2a.TaskState.input_required,
 }
 
 
-def message_to_input(message: A2AMessage) -> dict[str, Any]:
+def unsupported_part_kinds(message: a2a.Message) -> list[str]:
+    """Part kinds this deployment cannot carry.
+
+    The A2A spec allows file parts; this endpoint does not, so they are
+    reported rather than dropped on the floor.
+    """
+    return sorted(
+        {
+            getattr(part.root, "kind", "unknown")
+            for part in message.parts
+            if not isinstance(part.root, (a2a.TextPart, a2a.DataPart))
+        }
+    )
+
+
+def message_to_input(message: a2a.Message) -> dict[str, Any]:
     """Fold the A2A parts into a graph input payload."""
     payload: dict[str, Any] = {}
     messages: list[dict[str, str]] = []
-    role = "user" if message.role == "user" else "assistant"
+    role = "user" if message.role == a2a.Role.user else "assistant"
 
     for part in message.parts:
-        if isinstance(part, TextPart):
-            messages.append({"role": role, "content": part.text})
-        elif isinstance(part, DataPart):
-            payload.update(part.data)
+        root = part.root
+        if isinstance(root, a2a.TextPart):
+            messages.append({"role": role, "content": root.text})
+        elif isinstance(root, a2a.DataPart):
+            payload.update(root.data)
 
     if messages:
         payload["messages"] = messages
     return payload
 
 
-def run_to_task(run: RunORM) -> Task:
-    state = _RUN_STATUS_TO_TASK_STATE.get(run.status, "working")
+def run_to_task(run: RunORM) -> a2a.Task:
+    state = _RUN_STATUS_TO_TASK_STATE.get(run.status, a2a.TaskState.working)
     artifacts = None
     if run.output:
-        artifacts = [{"artifactId": run.run_id, "parts": [{"kind": "data", "data": run.output}]}]
+        artifacts = [
+            a2a.Artifact(
+                artifact_id=run.run_id,
+                parts=[a2a.Part(root=a2a.DataPart(data=run.output))],
+            )
+        ]
 
-    return Task(
+    status_message = None
+    if run.error_message:
+        status_message = a2a.Message(
+            role=a2a.Role.agent,
+            parts=[a2a.Part(root=a2a.TextPart(text=run.error_message))],
+            message_id=run.run_id,
+            context_id=run.thread_id,
+            task_id=run.run_id,
+        )
+
+    return a2a.Task(
         id=run.run_id,
         context_id=run.thread_id,
-        status=TaskStatus(
+        status=a2a.TaskStatus(
             state=state,
             timestamp=(run.updated_at or datetime.now(UTC)).isoformat(),
-            message={"error": run.error_message} if run.error_message else None,
+            message=status_message,
         ),
         artifacts=artifacts,
     )
 
 
-async def start_task(assistant_id: str, message: A2AMessage, user: User) -> tuple[str, str]:
+async def start_task(assistant_id: str, message: a2a.Message, user: User) -> tuple[str, str]:
     """Create the run backing an A2A task; returns ``(task_id, context_id)``."""
     thread_id = message.context_id or str(uuid4())
     maker = _get_session_maker()
@@ -93,7 +122,7 @@ async def start_task(assistant_id: str, message: A2AMessage, user: User) -> tupl
     return run_id, thread_id
 
 
-async def wait_for_task(task_id: str, thread_id: str, user: User) -> Task:
+async def wait_for_task(task_id: str, thread_id: str, user: User) -> a2a.Task:
     with contextlib.suppress(TimeoutError):
         await executor.wait_for_completion(task_id, timeout=settings.worker.BG_JOB_TIMEOUT_SECS)
     task = await get_task(task_id, thread_id, user)
@@ -102,7 +131,7 @@ async def wait_for_task(task_id: str, thread_id: str, user: User) -> Task:
     return task
 
 
-async def get_task(task_id: str, thread_id: str, user: User) -> Task | None:
+async def get_task(task_id: str, thread_id: str, user: User) -> a2a.Task | None:
     maker = _get_session_maker()
     async with maker() as session:
         run = await session.scalar(

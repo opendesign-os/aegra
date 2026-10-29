@@ -5,6 +5,7 @@ from unittest.mock import patch
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 
 from aegra_api.observability.targets.otlp import GenericOtelTarget
+from tests.fixtures.test_helpers import exporter_headers
 
 
 class TestGenericOtelTarget:
@@ -36,7 +37,7 @@ class TestGenericOtelTarget:
 
             assert isinstance(exporter, OTLPSpanExporter)
             assert exporter._endpoint == endpoint
-            assert exporter._headers == {}
+            assert exporter_headers(exporter) == {}
 
     def test_header_parsing_valid(self):
         """Test parsing of a valid header string."""
@@ -50,8 +51,8 @@ class TestGenericOtelTarget:
             target = GenericOtelTarget()
             exporter = target.get_exporter()
 
-            expected_headers = {"Authorization": "Bearer 123", "X-Custom": "Value"}
-            assert exporter._headers == expected_headers
+            expected_headers = {"authorization": "Bearer 123", "x-custom": "Value"}
+            assert exporter_headers(exporter) == expected_headers
 
     def test_header_parsing_malformed_items(self):
         """Test that malformed header items are skipped gracefully."""
@@ -67,8 +68,8 @@ class TestGenericOtelTarget:
             exporter = target.get_exporter()
 
             # Should contain valid pairs, invalid one ignored
-            expected_headers = {"Key1": "Value1", "Key2": "Value2"}
-            assert exporter._headers == expected_headers
+            expected_headers = {"key1": "Value1", "key2": "Value2"}
+            assert exporter_headers(exporter) == expected_headers
 
     def test_header_parsing_empty_string(self):
         """Test that empty string results in empty headers."""
@@ -81,4 +82,4 @@ class TestGenericOtelTarget:
             target = GenericOtelTarget()
             exporter = target.get_exporter()
 
-            assert exporter._headers == {}
+            assert exporter_headers(exporter) == {}

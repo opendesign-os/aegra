@@ -122,3 +122,19 @@ class DummyStoreItem:
         self.key = key
         self.value = value
         self.namespace = namespace
+
+
+def exporter_headers(exporter: object) -> dict[str, str]:
+    """Headers configured on an OTLP exporter.
+
+    They moved from ``exporter._headers`` onto the internal HTTP client in
+    opentelemetry 1.45, and now include the exporter's own content-type and
+    user-agent alongside the configured ones.
+    """
+    client = getattr(exporter, "_client", None)
+    headers = getattr(client, "_headers", None) if client is not None else None
+    if headers is None:
+        headers = getattr(exporter, "_headers", {}) or {}
+    skip = ("content-type", "user-agent")
+    # The client lowercases names, so compare on a normalised key.
+    return {k.lower(): v for k, v in dict(headers).items() if k.lower() not in skip}

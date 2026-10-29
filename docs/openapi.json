@@ -4026,6 +4026,45 @@
               }
             }
           }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "jsonrpc",
+                  "id",
+                  "method"
+                ],
+                "properties": {
+                  "jsonrpc": {
+                    "type": "string",
+                    "enum": [
+                      "2.0"
+                    ]
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "method": {
+                    "type": "string",
+                    "enum": [
+                      "message/send",
+                      "message/stream",
+                      "tasks/cancel",
+                      "tasks/get"
+                    ]
+                  },
+                  "params": {
+                    "type": "object",
+                    "description": "Method parameters; shape depends on the method."
+                  }
+                }
+              }
+            }
+          }
         }
       }
     }

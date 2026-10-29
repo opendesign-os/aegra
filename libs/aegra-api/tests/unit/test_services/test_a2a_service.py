@@ -1,32 +1,34 @@
-"""A2A wire models and the mapping between A2A tasks and Aegra runs."""
+"""A2A wire contract and the mapping between A2A tasks and Aegra runs.
+
+The models come from ``a2a.compat.v0_3.types`` — the SDK's JSON-RPC shapes.
+``a2a.types`` is the protobuf/gRPC representation and is a different wire form.
+"""
 
 from datetime import UTC, datetime
 from typing import Any
 
 import pytest
-from pydantic import ValidationError
+from a2a.compat.v0_3 import types as a2a
+from pydantic import TypeAdapter, ValidationError
 
-from aegra_api.models.a2a import (
-    INVALID_PARAMS,
-    A2AMessage,
-    JSONRPCRequest,
-    MessageParams,
-    Task,
-    TaskParams,
-    failure,
-    success,
+from aegra_api.services.a2a_service import (
+    TERMINAL_STATES,
+    message_to_input,
+    run_to_task,
+    unsupported_part_kinds,
 )
-from aegra_api.services.a2a_service import message_to_input, run_to_task
+
+REQUEST_ADAPTER: TypeAdapter[a2a.A2ARequest] = TypeAdapter(a2a.A2ARequest)
 
 
-def _message(**overrides: Any) -> A2AMessage:
+def _message(**overrides: Any) -> a2a.Message:
     payload = {
         "role": "user",
         "parts": [{"kind": "text", "text": "hello"}],
         "messageId": "m-1",
         **overrides,
     }
-    return A2AMessage.model_validate(payload)
+    return a2a.Message.model_validate(payload)
 
 
 class _Run:
@@ -39,33 +41,80 @@ class _Run:
         self.updated_at = datetime.now(UTC)
 
 
-class TestMessageModel:
-    def test_camel_case_fields_are_the_wire_form(self) -> None:
-        message = _message(contextId="ctx-9", taskId="t-9")
+class TestWireShape:
+    """Field names and enum values must be the JSON spec form, not the protobuf one."""
 
-        assert message.context_id == "ctx-9"
-        assert message.task_id == "t-9"
+    def test_message_serialises_camel_case(self) -> None:
+        body = _message(contextId="ctx-9").model_dump(by_alias=True, exclude_none=True, mode="json")
+
+        assert body["contextId"] == "ctx-9"
+        assert body["messageId"] == "m-1"
+        assert body["role"] == "user"
+        assert body["parts"][0] == {"kind": "text", "text": "hello"}
+
+    def test_task_serialises_camel_case(self) -> None:
+        body = run_to_task(_Run("success")).model_dump(by_alias=True, exclude_none=True, mode="json")
+
+        assert body["contextId"] == "ctx-1"
+        assert body["kind"] == "task"
+        assert "context_id" not in body
+
+    def test_task_states_are_the_hyphenated_spec_values(self) -> None:
+        assert a2a.TaskState.input_required.value == "input-required"
+        assert a2a.TaskState.completed.value == "completed"
+
+
+class TestRequestParsing:
+    @pytest.mark.parametrize(
+        ("method", "params", "expected"),
+        [
+            (
+                "message/send",
+                {"message": {"role": "user", "parts": [{"kind": "text", "text": "x"}], "messageId": "m"}},
+                a2a.SendMessageRequest,
+            ),
+            (
+                "message/stream",
+                {"message": {"role": "user", "parts": [{"kind": "text", "text": "x"}], "messageId": "m"}},
+                a2a.SendStreamingMessageRequest,
+            ),
+            ("tasks/get", {"id": "t-1"}, a2a.GetTaskRequest),
+            ("tasks/cancel", {"id": "t-1"}, a2a.CancelTaskRequest),
+        ],
+    )
+    def test_each_method_parses_to_its_typed_request(self, method: str, params: dict[str, Any], expected: type) -> None:
+        envelope = REQUEST_ADAPTER.validate_python(
+            {"jsonrpc": "2.0", "id": "1", "method": method, "params": params}
+        ).root
+
+        assert isinstance(envelope, expected)
+
+    def test_wrong_jsonrpc_version_is_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            REQUEST_ADAPTER.validate_python({"jsonrpc": "1.0", "id": "1", "method": "tasks/get", "params": {"id": "t"}})
+
+    def test_file_parts_parse_but_are_reported_as_unsupported(self) -> None:
+        """The base spec allows file parts; this endpoint cannot carry them, so it says so."""
+        message = a2a.Message.model_validate(
+            {"role": "user", "parts": [{"kind": "file", "file": {"uri": "x"}}], "messageId": "m"}
+        )
+
+        assert unsupported_part_kinds(message) == ["file"]
+
+    def test_text_and_data_parts_are_supported(self) -> None:
+        message = a2a.Message.model_validate(
+            {
+                "role": "user",
+                "parts": [{"kind": "text", "text": "x"}, {"kind": "data", "data": {"a": 1}}],
+                "messageId": "m",
+            }
+        )
+
+        assert unsupported_part_kinds(message) == []
 
     def test_message_id_is_required(self) -> None:
         with pytest.raises(ValidationError):
-            A2AMessage.model_validate({"role": "user", "parts": [{"kind": "text", "text": "x"}]})
-
-    def test_empty_parts_are_rejected(self) -> None:
-        with pytest.raises(ValidationError):
-            A2AMessage.model_validate({"role": "user", "parts": [], "messageId": "m-1"})
-
-    def test_file_parts_are_not_accepted(self) -> None:
-        """Only text and data parts are carried; a file part must not pass silently."""
-        with pytest.raises(ValidationError):
-            A2AMessage.model_validate({"role": "user", "parts": [{"kind": "file", "uri": "x"}], "messageId": "m-1"})
-
-    @pytest.mark.parametrize("role", ["user", "agent"])
-    def test_spec_roles_are_accepted(self, role: str) -> None:
-        assert _message(role=role).role == role
-
-    def test_unknown_role_is_rejected(self) -> None:
-        with pytest.raises(ValidationError):
-            _message(role="system")
+            a2a.Message.model_validate({"role": "user", "parts": [{"kind": "text", "text": "x"}]})
 
 
 class TestMessageToInput:
@@ -94,79 +143,57 @@ class TestRunToTask:
     @pytest.mark.parametrize(
         ("run_status", "task_state"),
         [
-            ("pending", "submitted"),
-            ("running", "working"),
-            ("success", "completed"),
-            ("error", "failed"),
-            ("timeout", "failed"),
-            ("interrupted", "input-required"),
+            ("pending", a2a.TaskState.submitted),
+            ("running", a2a.TaskState.working),
+            ("success", a2a.TaskState.completed),
+            ("error", a2a.TaskState.failed),
+            ("timeout", a2a.TaskState.failed),
+            ("interrupted", a2a.TaskState.input_required),
         ],
     )
-    def test_status_mapping(self, run_status: str, task_state: str) -> None:
+    def test_status_mapping(self, run_status: str, task_state: a2a.TaskState) -> None:
         assert run_to_task(_Run(run_status)).status.state == task_state
 
     def test_unknown_status_falls_back_to_working(self) -> None:
-        assert run_to_task(_Run("something-new")).status.state == "working"
+        assert run_to_task(_Run("something-new")).status.state == a2a.TaskState.working
 
     def test_output_becomes_a_data_artifact(self) -> None:
         task = run_to_task(_Run("success", output={"answer": 42}))
 
         assert task.artifacts is not None
-        assert task.artifacts[0]["parts"][0] == {"kind": "data", "data": {"answer": 42}}
+        assert task.artifacts[0].parts[0].root.data == {"answer": 42}
 
     def test_no_output_means_no_artifacts(self) -> None:
         assert run_to_task(_Run("running")).artifacts is None
 
-    def test_error_is_surfaced_on_the_status(self) -> None:
+    def test_error_is_surfaced_as_an_agent_message(self) -> None:
         task = run_to_task(_Run("error", error="boom"))
 
-        assert task.status.message == {"error": "boom"}
+        assert task.status.message is not None
+        assert task.status.message.parts[0].root.text == "boom"
+        assert task.status.message.role == a2a.Role.agent
 
-    def test_serialises_with_the_spec_field_names(self) -> None:
-        body = run_to_task(_Run("success")).model_dump(exclude_none=True)
+    def test_terminal_states_cover_the_finished_run_statuses(self) -> None:
+        for status in ("success", "error", "timeout"):
+            assert run_to_task(_Run(status)).status.state in TERMINAL_STATES
 
-        assert body["contextId"] == "ctx-1"
-        assert body["kind"] == "task"
-        assert "context_id" not in body
-
-
-class TestParamModels:
-    def test_task_params_use_camel_case(self) -> None:
-        params = TaskParams.model_validate({"id": "t-1", "contextId": "ctx-1", "historyLength": 3})
-
-        assert params.context_id == "ctx-1"
-        assert params.history_length == 3
-
-    def test_history_length_is_bounded(self) -> None:
-        with pytest.raises(ValidationError):
-            TaskParams.model_validate({"id": "t-1", "contextId": "c", "historyLength": 99})
-
-    def test_message_params_require_a_message(self) -> None:
-        with pytest.raises(ValidationError):
-            MessageParams.model_validate({})
+    def test_interrupted_is_not_terminal(self) -> None:
+        """An interrupted run is waiting on input, so the stream must keep going."""
+        assert run_to_task(_Run("interrupted")).status.state not in TERMINAL_STATES
 
 
-class TestEnvelopes:
-    def test_request_requires_jsonrpc_two(self) -> None:
-        with pytest.raises(ValidationError):
-            JSONRPCRequest.model_validate({"jsonrpc": "1.0", "id": "1", "method": "tasks/get"})
-
-    def test_success_envelope_omits_the_error_slot(self) -> None:
-        body = success("1", {"ok": True})
-
-        assert body == {"jsonrpc": "2.0", "id": "1", "result": {"ok": True}}
-
-    def test_failure_envelope_omits_the_result_slot(self) -> None:
-        body = failure("1", INVALID_PARAMS, "bad")
-
-        assert body == {"jsonrpc": "2.0", "id": "1", "error": {"code": INVALID_PARAMS, "message": "bad"}}
-
-    def test_failure_keeps_a_null_id_when_the_request_was_unparseable(self) -> None:
-        assert failure(None, INVALID_PARAMS, "bad")["id"] is None
-
-
-class TestTaskModel:
-    def test_kind_defaults_to_task(self) -> None:
-        task = Task.model_validate({"id": "t", "contextId": "c", "status": {"state": "completed"}})
-
-        assert task.kind == "task"
+class TestErrorCodes:
+    @pytest.mark.parametrize(
+        ("error", "code"),
+        [
+            (a2a.TaskNotFoundError(), -32001),
+            (a2a.TaskNotCancelableError(), -32002),
+            (a2a.MethodNotFoundError(), -32601),
+            (a2a.InvalidParamsError(), -32602),
+            (a2a.InvalidRequestError(), -32600),
+            (a2a.JSONParseError(), -32700),
+            (a2a.InternalError(), -32603),
+        ],
+    )
+    def test_sdk_errors_carry_the_spec_codes(self, error: Any, code: int) -> None:
+        assert error.code == code

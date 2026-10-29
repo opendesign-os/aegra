@@ -162,3 +162,36 @@ channels are fixed per connection in the `/stream/events` request body.
 
 Verified against the Docker stack (Redis broker, 3 workers) with
 `scratchpad/verify_api.py`: 90 checks, 0 failures.
+
+
+## Library audit
+
+Every protocol surface is served by a maintained library rather than hand-written
+code. What remains hand-written is listed with the reason.
+
+| Surface | Library |
+|:--|:--|
+| MCP transport and tool protocol | `mcp` 2.x, stateless Streamable HTTP |
+| A2A models, envelopes, error types | `a2a-sdk` `compat.v0_3.types` |
+| Agent Protocol v2 events and commands | `langchain-protocol` |
+| Graph execution, checkpoints, store | `langgraph`, `langgraph-checkpoint-postgres` |
+| SSE framing | `sse-starlette` |
+| Cron expressions | `croniter` |
+| Webhook retry and backoff | `tenacity` |
+| Metrics registry and exposition | `prometheus-client`, `prometheus-fastapi-instrumentator` |
+
+Hand-written, with cause:
+
+- **Checkpoint copy** (`services/thread_copy.py`). `BaseCheckpointSaver.acopy_thread`
+  is still an unimplemented stub in `langgraph-checkpoint-postgres` 3.1.2, so the
+  copy is done directly. Column lists come from the catalog so a schema change in
+  a later LangGraph release does not silently truncate the copy.
+- **A2A JSON-RPC dispatch** (`api/a2a.py`). `JsonRpcDispatcher` with
+  `enable_v0_3_compat=True` would own parsing, routing and SSE, but its adapter
+  catches every handler exception and reports `InternalError`
+  (`a2a/compat/v0_3/jsonrpc_adapter.py`), collapsing -32002/-32004/-32005 into
+  -32603. A2A clients branch on those codes, so dispatch stays local while the
+  SDK still supplies every model, envelope and error type.
+- **Metrics JSON view** (`observability/metrics.py`). `prometheus-client` exposes
+  only the text format; the JSON variant walks the library's own
+  `registry.collect()` rather than reimplementing exposition.

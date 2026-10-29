@@ -133,6 +133,16 @@ class TestA2AMessageSend:
 
         assert body["error"]["code"] == -32602
 
+    async def test_file_parts_are_declined_not_dropped(self, client: httpx.AsyncClient) -> None:
+        """The base A2A spec allows file parts; this deployment cannot carry them."""
+        body = await _a2a(
+            client,
+            "message/send",
+            _message(parts=[{"kind": "file", "file": {"uri": "https://example/x.png"}}]),
+        )
+
+        assert body["error"]["code"] == -32005
+
 
 class TestA2ATasks:
     async def test_get_returns_the_task(self, client: httpx.AsyncClient) -> None:
@@ -163,7 +173,7 @@ class TestA2AProtocolErrors:
         response = await client.post("/a2a/agent", content=b"{not json", headers={"content-type": "application/json"})
 
         body = response.json()
-        assert body["error"]["code"] == -32600
+        assert body["error"]["code"] == -32700
         assert body["id"] is None
 
     async def test_wrong_jsonrpc_version_is_an_invalid_request(self, client: httpx.AsyncClient) -> None:

@@ -6,6 +6,7 @@ from unittest.mock import patch
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 
 from aegra_api.observability.targets.langfuse import LangfuseTarget
+from tests.fixtures.test_helpers import exporter_headers
 
 
 class TestLangfuseTarget:
@@ -54,7 +55,7 @@ class TestLangfuseTarget:
 
             # Verify Authorization Header (Basic Auth Base64)
             expected_auth = base64.b64encode(f"{pk}:{sk}".encode()).decode()
-            assert exporter._headers["Authorization"] == f"Basic {expected_auth}"
+            assert exporter_headers(exporter)["authorization"] == f"Basic {expected_auth}"
 
     def test_endpoint_slash_handling(self):
         """Test that trailing slashes in host are handled correctly."""

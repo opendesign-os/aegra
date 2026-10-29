@@ -16,6 +16,7 @@ from uuid import uuid4
 import mcp.types as mcp_types
 import structlog
 from mcp.server.lowlevel import Server
+from mcp.server.lowlevel.server import ServerRequestContext
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 
 from aegra_api import __version__
@@ -50,17 +51,13 @@ async def _tool_input_schema(graph_id: str, user: User | None) -> dict[str, Any]
         return _DEFAULT_INPUT_SCHEMA
 
 
-def build_server() -> Server:
-    server: Server = Server(
-        settings.app.PROJECT_NAME,
-        version=__version__,
-        instructions="Each tool runs one graph of this deployment and returns its final output.",
-    )
-
-    @server.list_tools()
-    async def list_tools() -> list[mcp_types.Tool]:
-        user = current_user.get()
-        return [
+async def _list_tools(
+    _context: ServerRequestContext[Any],
+    _params: mcp_types.PaginatedRequestParams | None,
+) -> mcp_types.ListToolsResult:
+    user = current_user.get()
+    return mcp_types.ListToolsResult(
+        tools=[
             mcp_types.Tool(
                 name=graph_id,
                 description=f"Run the '{graph_id}' graph and return its final output.",
@@ -68,17 +65,35 @@ def build_server() -> Server:
             )
             for graph_id in get_langgraph_service().list_graphs()
         ]
+    )
 
-    @server.call_tool()
-    async def call_tool(name: str, arguments: dict[str, Any]) -> list[mcp_types.ContentBlock]:
-        user = current_user.get()
-        if user is None:
-            raise ValueError("MCP tool calls require an authenticated caller.")
 
-        output = await _run_graph(name, arguments, user)
-        return [mcp_types.TextContent(type="text", text=str(output))]
+def _error_result(message: str) -> mcp_types.CallToolResult:
+    return mcp_types.CallToolResult(content=[mcp_types.TextContent(type="text", text=message)], isError=True)
 
-    return server
+
+async def _call_tool(
+    _context: ServerRequestContext[Any],
+    params: mcp_types.CallToolRequestParams,
+) -> mcp_types.CallToolResult:
+    user = current_user.get()
+    if user is None:
+        return _error_result("MCP tool calls require an authenticated caller.")
+    if params.name not in get_langgraph_service().list_graphs():
+        return _error_result(f"Unknown tool {params.name!r}.")
+
+    output = await _run_graph(params.name, params.arguments or {}, user)
+    return mcp_types.CallToolResult(content=[mcp_types.TextContent(type="text", text=str(output))])
+
+
+def build_server() -> Server[Any]:
+    return Server(
+        settings.app.PROJECT_NAME,
+        version=__version__,
+        instructions="Each tool runs one graph of this deployment and returns its final output.",
+        on_list_tools=_list_tools,
+        on_call_tool=_call_tool,
+    )
 
 
 async def _run_graph(graph_id: str, arguments: dict[str, Any], user: User) -> Any:
@@ -110,7 +125,8 @@ class McpTransport:
         self._exit: contextlib.AsyncExitStack | None = None
 
     async def start(self) -> None:
-        # json_response=True: the documented contract answers application/json, not an SSE stream.
+        # json_response=True: the documented contract answers application/json,
+        # not an SSE stream.
         manager = StreamableHTTPSessionManager(app=build_server(), stateless=True, json_response=True)
         stack = contextlib.AsyncExitStack()
         await stack.enter_async_context(manager.run())

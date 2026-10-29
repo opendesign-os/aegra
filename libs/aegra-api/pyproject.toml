@@ -51,10 +51,8 @@ dependencies = [
     "prometheus-fastapi-instrumentator>=8.0.2",
 
     # Agent interop protocols
-    # Pinned below 2.0: 2.x swaps httpx for httpx2, a second HTTP client.
-    # A2A is served from hand-written models: a2a-sdk's types are the gRPC
-    # protobuf shape, not the JSON-RPC wire form this endpoint speaks.
-    "mcp>=1.20.0,<2.0.0",
+    "mcp>=2.2.0",
+    "a2a-sdk>=1.1.5",
 
     # Utils
     "structlog>=25.4.0",
