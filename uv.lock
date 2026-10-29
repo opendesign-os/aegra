@@ -44,6 +44,7 @@ dependencies = [
     { name = "sqlalchemy" },
     { name = "sse-starlette" },
     { name = "structlog" },
+    { name = "tenacity" },
     { name = "uvicorn" },
 ]
 
@@ -87,6 +88,7 @@ requires-dist = [
     { name = "sqlalchemy", specifier = ">=2.0.0" },
     { name = "sse-starlette", specifier = ">=3.3.4,<4.0.0" },
     { name = "structlog", specifier = ">=25.4.0" },
+    { name = "tenacity", specifier = ">=9.1.4" },
     { name = "uvicorn", specifier = ">=0.36.0" },
 ]
 

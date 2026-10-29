@@ -58,6 +58,7 @@ dependencies = [
 
     # Utils
     "structlog>=25.4.0",
+    "tenacity>=9.1.4",
     "asgi-correlation-id>=4.3.4",
 
     # Redis (optional broker backend for multi-instance streaming)

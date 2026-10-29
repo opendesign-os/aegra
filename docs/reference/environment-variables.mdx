@@ -204,6 +204,33 @@ AEGRA_CHECKPOINT_DURABILITY=exit
 
 An invalid value stops the server at startup. See [checkpoint durability](/guides/threads-and-state#checkpoint-durability) for the trade-offs.
 
+## Webhooks
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AEGRA_WEBHOOK_SECRET` | — | Signing key for run and cron webhooks. A `whsec_`-prefixed key is base64-decoded behind the prefix; anything else is used as raw bytes. When unset, deliveries carry no signature |
+| `AEGRA_WEBHOOK_ALLOW_PRIVATE_NETWORKS` | `false` | Allow webhook targets that resolve outside publicly routable space |
+| `AEGRA_WEBHOOK_ALLOWED_HOSTS` | — | Comma-separated hosts exempt from that rule, for the internal services you do call |
+
+```bash
+AEGRA_WEBHOOK_SECRET=whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw
+AEGRA_WEBHOOK_ALLOWED_HOSTS=worker.internal
+```
+
+Every delivery carries `webhook-id` and, when a secret is set, `webhook-timestamp`
+and `webhook-signature` following [Standard Webhooks](https://www.standardwebhooks.com):
+the signature is HMAC-SHA256 over `{webhook-id}.{webhook-timestamp}.{body}`, base64
+encoded behind a `v1,` prefix. The id is the same on every retry, so a receiver
+deduplicates on it; the timestamp is the time that attempt was sent, so reject
+anything outside your replay window (five minutes is the usual choice).
+
+Webhook URLs are caller-supplied, which makes them an SSRF lever. A URL whose host
+is, or resolves to, a loopback, private, link-local or otherwise non-routable
+address is rejected — at request time for a literal address, at delivery time for a
+name. Redirects are never followed. Deployments that call a service on their own
+network list those hosts in `AEGRA_WEBHOOK_ALLOWED_HOSTS` or set
+`AEGRA_WEBHOOK_ALLOW_PRIVATE_NETWORKS=true`.
+
 ## Prometheus metrics
 
 | Variable | Default | Description |

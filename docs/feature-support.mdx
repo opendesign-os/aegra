@@ -106,7 +106,7 @@ description: "What Aegra supports today, what's coming soon, and what's not yet 
 | Feature | Status | Notes |
 |:--|:--|:--|
 | Prometheus metrics | Supported | `GET /metrics` serves Prometheus exposition, or JSON via `?format=json`. Off by default: set `ENABLE_PROMETHEUS_METRICS=true`, since the endpoint is deliberately unauthenticated. |
-| Webhook callbacks | Supported | `webhook` on run and cron creation; delivered on terminal status with retry and credential redaction. |
+| Webhook callbacks | Supported | `webhook` on run and cron creation; delivered on terminal status with retry, Standard Webhooks signing, non-public target rejection and credential redaction. |
 
 ### Observability
 

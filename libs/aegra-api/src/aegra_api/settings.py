@@ -472,6 +472,25 @@ class CheckpointerSettings(EnvBase):
     AEGRA_CHECKPOINT_DURABILITY: str | None = None
 
 
+class WebhookSettings(EnvBase):
+    """Outbound webhook signing and target restrictions.
+
+    AEGRA_WEBHOOK_SECRET signs every delivery the Standard Webhooks way, so a
+    receiver can tell a real callback from anyone who learned the URL. Unset
+    leaves deliveries unsigned.
+
+    Webhook URLs come from callers, which makes them an SSRF lever: by default a
+    target that resolves outside publicly routable space is refused. Deployments
+    that call a sibling service on a private network either name those hosts in
+    AEGRA_WEBHOOK_ALLOWED_HOSTS or drop the guard with
+    AEGRA_WEBHOOK_ALLOW_PRIVATE_NETWORKS.
+    """
+
+    AEGRA_WEBHOOK_SECRET: str | None = None
+    AEGRA_WEBHOOK_ALLOW_PRIVATE_NETWORKS: bool = False
+    AEGRA_WEBHOOK_ALLOWED_HOSTS: str = ""  # Comma-separated: "worker.internal,10.0.0.7"
+
+
 class EventStreamingSettings(EnvBase):
     """Agent Protocol v2 event streaming (/threads/{id}/stream/events + /commands).
 
@@ -503,6 +522,7 @@ class Settings:
         self.thread_ttl = ThreadTTLSettings()
         self.checkpointer = CheckpointerSettings()
         self.event_streaming = EventStreamingSettings()
+        self.webhook = WebhookSettings()
 
 
 settings = Settings()
