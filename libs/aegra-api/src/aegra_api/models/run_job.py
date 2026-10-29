@@ -42,6 +42,7 @@ class RunExecution(BaseModel):
     stream_mode: str | list[str] | None = None
     checkpoint: dict[str, Any] | None = None
     command: dict[str, Any] | None = None
+    # Resolved at creation (run field, then server default); None keeps LangGraph's default.
     durability: Durability | None = None
     stream_resumable: bool = False
     # When true, stream via the native v3 protocol producer for Agent Protocol v2.

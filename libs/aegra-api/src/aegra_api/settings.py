@@ -363,6 +363,10 @@ class WorkerSettings(EnvBase):
     WORKER_COUNT: int = 3
     N_JOBS_PER_WORKER: int = 10
     WORKER_QUEUE_KEY: str = "aegra:jobs"
+    # The read timeout must outlast the block: a client that gives up first drops the reply
+    # of a job Redis already popped, stranding the run until the reaper.
+    BLPOP_TIMEOUT_SECONDS: int = Field(default=5, gt=0)  # 0 makes Redis block forever
+    BLOCKING_SOCKET_TIMEOUT_SECONDS: float = 15.0
     WORKER_DRAIN_TIMEOUT: float = 30.0
     BG_JOB_TIMEOUT_SECS: int = 3600
     BG_JOB_MAX_RETRIES: int = 3
@@ -381,6 +385,12 @@ class WorkerSettings(EnvBase):
     @model_validator(mode="after")
     def _validate_lease_timing(self) -> "WorkerSettings":
         """Ensure the worker lease safely outlives missed heartbeat intervals."""
+        if self.BLOCKING_SOCKET_TIMEOUT_SECONDS < self.BLPOP_TIMEOUT_SECONDS + 5:
+            raise ValueError(
+                f"BLOCKING_SOCKET_TIMEOUT_SECONDS ({self.BLOCKING_SOCKET_TIMEOUT_SECONDS}) must exceed "
+                f"BLPOP_TIMEOUT_SECONDS ({self.BLPOP_TIMEOUT_SECONDS}) by at least 5s, or a job popped "
+                f"at the end of the block can be lost with the timed-out connection."
+            )
         if self.LEASE_DURATION_SECONDS <= 2 * self.HEARTBEAT_INTERVAL_SECONDS:
             raise ValueError(
                 f"LEASE_DURATION_SECONDS ({self.LEASE_DURATION_SECONDS}) must be "
@@ -451,6 +461,17 @@ class ThreadTTLSettings(EnvBase):
     LANGGRAPH_THREAD_TTL: str | None = None
 
 
+class CheckpointerSettings(EnvBase):
+    """Server-wide checkpoint durability default.
+
+    AEGRA_CHECKPOINT_DURABILITY is one of sync, async or exit. When set it wins
+    over the aegra.json checkpointer.durability key; a per-run durability field
+    wins over both. Validated in services.run_preparation at startup.
+    """
+
+    AEGRA_CHECKPOINT_DURABILITY: str | None = None
+
+
 class EventStreamingSettings(EnvBase):
     """Agent Protocol v2 event streaming (/threads/{id}/stream/events + /commands).
 
@@ -480,6 +501,7 @@ class Settings:
         self.worker = WorkerSettings()
         self.cron = CronSettings()
         self.thread_ttl = ThreadTTLSettings()
+        self.checkpointer = CheckpointerSettings()
         self.event_streaming = EventStreamingSettings()
 
 

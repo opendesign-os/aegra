@@ -52,10 +52,18 @@ call("system", "GET", "/openapi.json")
 
 # --- assistants -----------------------------------------------------------
 aid = "asst-" + uuid.uuid4().hex[:8]
-r = call("assistants", "POST", "/assistants", json={
-    "assistant_id": aid, "graph_id": "agent", "name": "verify",
-    "config": {"configurable": {"probe_id": aid}}, "metadata": {"probe": "1"},
-})
+r = call(
+    "assistants",
+    "POST",
+    "/assistants",
+    json={
+        "assistant_id": aid,
+        "graph_id": "agent",
+        "name": "verify",
+        "config": {"configurable": {"probe_id": aid}},
+        "metadata": {"probe": "1"},
+    },
+)
 state["assistant_id"] = field(r, "assistant_id") or aid
 A = state["assistant_id"]
 call("assistants", "GET", "/assistants")
@@ -65,8 +73,14 @@ r = call("assistants", "GET", "/assistants/" + A)
 if r is not None and r.status_code < 300:
     body = r.json()
     has = "metadata" in body and "metadata_dict" not in body
-    results.append(("assistants", "Assistant.metadata wire name", 200 if has else "MISS",
-                    "OK" if has else "serialized as " + ",".join(body.keys())))
+    results.append(
+        (
+            "assistants",
+            "Assistant.metadata wire name",
+            200 if has else "MISS",
+            "OK" if has else "serialized as " + ",".join(body.keys()),
+        )
+    )
 call("assistants", "PATCH", "/assistants/" + A, json={"name": "verify2"})
 call("assistants", "GET", "/assistants/" + A + "/schemas")
 call("assistants", "GET", "/assistants/" + A + "/graph")
@@ -76,7 +90,12 @@ call("assistants", "POST", "/assistants/" + A + "/versions", json={})
 call("assistants", "POST", "/assistants/" + A + "/latest", json={"version": 1})
 
 # --- threads --------------------------------------------------------------
-r = call("threads", "POST", "/threads", json={"metadata": {"probe": "1", "graph_id": "agent", "assistant_id": A}, "if_exists": "raise"})
+r = call(
+    "threads",
+    "POST",
+    "/threads",
+    json={"metadata": {"probe": "1", "graph_id": "agent", "assistant_id": A}, "if_exists": "raise"},
+)
 T = field(r, "thread_id")
 state["thread_id"] = T
 call("threads", "GET", "/threads")
@@ -90,11 +109,17 @@ call("threads", "POST", "/threads/" + str(T) + "/history", json={"limit": 3})
 call("threads", "GET", "/threads/" + str(T) + "/history")
 r = call("threads", "POST", "/threads/" + str(T) + "/copy")
 state["copy_id"] = field(r, "thread_id")
-call("threads", "POST", "/threads", json={
-    "thread_id": str(uuid.uuid4()),
-    "metadata": {"graph_id": "agent"},
-    "supersteps": [{"updates": [{"values": {"messages": []}, "as_node": "__start__"}]}],
-}, expect=(200, 201))
+call(
+    "threads",
+    "POST",
+    "/threads",
+    json={
+        "thread_id": str(uuid.uuid4()),
+        "metadata": {"graph_id": "agent"},
+        "supersteps": [{"updates": [{"values": {"messages": []}, "as_node": "__start__"}]}],
+    },
+    expect=(200, 201),
+)
 
 # --- runs -----------------------------------------------------------------
 run_body = {
@@ -111,28 +136,40 @@ if r is not None and r.status_code < 300:
     body = r.json()
     for key in ("kwargs", "metadata", "multitask_strategy"):
         present = key in body
-        results.append(("runs", "Run." + key + " in response", 200 if present else "MISS",
-                        "OK" if present else "absent"))
+        results.append(
+            ("runs", "Run." + key + " in response", 200 if present else "MISS", "OK" if present else "absent")
+        )
 call("runs", "GET", "/threads/" + str(T) + "/runs")
 call("runs", "GET", "/threads/" + str(T) + "/runs/" + str(R))
 call("runs", "POST", "/threads/" + str(T) + "/runs/" + str(R) + "/cancel", (200, 204, 404, 409))
 call("runs", "POST", "/runs/cancel", (200, 204), json={"status": "pending"})
-call("runs", "POST", "/runs/batch", (200, 201, 404, 405),
-     json=[{"assistant_id": A, "input": {"messages": []}}])
+call("runs", "POST", "/runs/batch", (200, 201, 404, 405), json=[{"assistant_id": A, "input": {"messages": []}}])
 call("runs", "DELETE", "/threads/" + str(T) + "/runs/" + str(R), (200, 204, 404, 409))
 
 # --- contract rejections ---------------------------------------------------
-call("contract", "POST", "/threads/" + str(T) + "/runs", (422,),
-     json=dict(run_body, checkpoint_during=True, durability="sync"))
-call("contract", "POST", "/threads/" + str(T) + "/runs", (422,),
-     json=dict(run_body, webhook="ftp://bad/x"))
-call("contract", "POST", "/threads/" + str(T) + "/runs", (422,),
-     json=dict(run_body, durability="never"))
+call(
+    "contract",
+    "POST",
+    "/threads/" + str(T) + "/runs",
+    (422,),
+    json=dict(run_body, checkpoint_during=True, durability="sync"),
+)
+call("contract", "POST", "/threads/" + str(T) + "/runs", (422,), json=dict(run_body, webhook="ftp://bad/x"))
+call("contract", "POST", "/threads/" + str(T) + "/runs", (422,), json=dict(run_body, durability="never"))
 
 # --- crons ----------------------------------------------------------------
-r = call("crons", "POST", "/runs/crons", (200, 201), json={
-    "assistant_id": A, "schedule": "0 0 * * *", "input": {"messages": []}, "enabled": False,
-})
+r = call(
+    "crons",
+    "POST",
+    "/runs/crons",
+    (200, 201),
+    json={
+        "assistant_id": A,
+        "schedule": "0 0 * * *",
+        "input": {"messages": []},
+        "enabled": False,
+    },
+)
 C = field(r, "cron_id")
 call("crons", "POST", "/runs/crons/search", json={"limit": 5})
 call("crons", "POST", "/runs/crons/count", json={})
@@ -150,19 +187,24 @@ call("store", "POST", "/store/namespaces", json={"prefix": ["verify"], "limit": 
 call("store", "DELETE", "/store/items", (200, 204), json={"namespace": ns, "key": "k1"})
 
 # --- v2 / v3 protocol ------------------------------------------------------
-for cid, method, want in ((1, "agent.getTree", "success"), (2, "state.get", "success"),
-                          (3, "state.listCheckpoints", "success"),
-                          (4, "subscription.subscribe", "not_supported")):
-    rr = call("v2", "POST", "/threads/" + str(T) + "/commands", (200, 503),
-              json={"id": cid, "method": method, "params": {}})
+for cid, method, want in (
+    (1, "agent.getTree", "success"),
+    (2, "state.get", "success"),
+    (3, "state.listCheckpoints", "success"),
+    (4, "subscription.subscribe", "not_supported"),
+):
+    rr = call(
+        "v2", "POST", "/threads/" + str(T) + "/commands", (200, 503), json={"id": cid, "method": method, "params": {}}
+    )
     if rr is not None and rr.status_code == 200:
         payload = rr.json()
         kind = payload.get("type") if isinstance(payload, dict) else None
         err = payload.get("error") if isinstance(payload, dict) else None
         code = err.get("code") if isinstance(err, dict) else err
         got = kind if kind == "success" else str(code)
-        results.append(("v2", method + " -> " + want, 200 if got == want else "MISS",
-                        "OK" if got == want else "got " + got))
+        results.append(
+            ("v2", method + " -> " + want, 200 if got == want else "MISS", "OK" if got == want else "got " + got)
+        )
 call("v2", "GET", "/threads/" + str(T) + "/stream", (200, 404, 405))
 
 # --- newly aligned surface -------------------------------------------------
@@ -175,25 +217,46 @@ call("aligned", "POST", "/threads/search", (422,), json={"values": {"a": 1}})
 call("aligned", "POST", "/threads/search", (422,), json={"extract": {"a": "values.x"}})
 call("aligned", "POST", "/assistants/search", json={"limit": 5, "select": ["assistant_id", "name"]})
 call("aligned", "POST", "/assistants/" + A + "/latest", params={"version": 1})
-call("aligned", "PUT", "/store/items", (200, 201, 204),
-     json={"namespace": ns, "key": "k2", "value": {"v": 2}, "index": ["v"], "ttl": 60})
+call(
+    "aligned",
+    "PUT",
+    "/store/items",
+    (200, 201, 204),
+    json={"namespace": ns, "key": "k2", "value": {"v": 2}, "index": ["v"], "ttl": 60},
+)
 call("aligned", "GET", "/store/items", params={"namespace": ".".join(ns), "key": "k2", "refresh_ttl": True})
 call("aligned", "POST", "/store/items/search", json={"namespace_prefix": ns, "limit": 5, "refresh_ttl": True})
 call("aligned", "DELETE", "/store/items", (200, 204), json={"namespace": ns, "key": "k2"})
-call("aligned", "POST", "/runs/crons", (200, 201), json={
-    "assistant_id": A, "schedule": "0 0 * * *", "input": {"messages": []},
-    "enabled": False, "durability": "exit", "stream_resumable": True,
-})
+call(
+    "aligned",
+    "POST",
+    "/runs/crons",
+    (200, 201),
+    json={
+        "assistant_id": A,
+        "schedule": "0 0 * * *",
+        "input": {"messages": []},
+        "enabled": False,
+        "durability": "exit",
+        "stream_resumable": True,
+    },
+)
 for cid, method in ((10, "state.fork"), (11, "input.inject"), (12, "subscription.subscribe")):
-    rr = call("aligned", "POST", "/threads/" + str(T) + "/commands", (200, 503),
-              json={"id": cid, "method": method, "params": {"checkpoint_id": "x", "message": {"content": "hi"}}})
+    rr = call(
+        "aligned",
+        "POST",
+        "/threads/" + str(T) + "/commands",
+        (200, 503),
+        json={"id": cid, "method": method, "params": {"checkpoint_id": "x", "message": {"content": "hi"}}},
+    )
     if rr is not None and rr.status_code == 200:
         payload = rr.json()
         err = payload.get("error") if isinstance(payload, dict) else None
         code = err.get("code") if isinstance(err, dict) else err
         known = payload.get("type") == "success" or code != "unknown_command"
-        results.append(("aligned", method + " recognised", 200 if known else "MISS",
-                        "OK" if known else "still unknown_command"))
+        results.append(
+            ("aligned", method + " recognised", 200 if known else "MISS", "OK" if known else "still unknown_command")
+        )
 
 r = call("aligned", "POST", "/threads", json={"metadata": {"probe": "prune"}})
 P = field(r, "thread_id")

@@ -132,7 +132,7 @@ class TestThreadPrune:
         request = ThreadPruneRequest.model_validate({})
 
         assert request.thread_ids is None
-        assert request.strategy is None
+        assert request.strategy == "delete"
 
 
 class TestThreadResponseShape:

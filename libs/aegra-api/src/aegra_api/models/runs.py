@@ -48,6 +48,18 @@ class RunCreate(BaseModel):
         None,
         description="Checkpoint to run from. Short form of checkpoint={'checkpoint_id': ...}; 'checkpoint' wins if both set.",
     )
+    durability: Durability | None = Field(
+        None,
+        description=(
+            "When checkpoints are persisted: 'sync' before each next step starts, 'async' in the background "
+            "while the next step runs (LangGraph default), 'exit' only once, when the run ends. "
+            "Overrides the server default (checkpointer.durability)."
+        ),
+    )
+    checkpoint_during: bool | None = Field(
+        None,
+        description="Deprecated alias for durability: true means 'async', false means 'exit'. 'durability' wins if both are set.",
+    )
     stream: bool = Field(False, description="Enable streaming response")
     stream_mode: str | list[str] | None = Field(None, description="Requested stream mode(s)")
     on_disconnect: str | None = Field(
@@ -168,12 +180,6 @@ class RunCreate(BaseModel):
     @classmethod
     def validate_webhook(cls, value: str | None) -> str | None:
         return validate_webhook_url(value)
-
-    @model_validator(mode="after")
-    def validate_durability_exclusivity(self) -> Self:
-        if self.checkpoint_during is not None and self.durability is not None:
-            raise ValueError("Cannot specify both 'checkpoint_during' and 'durability' - use 'durability'")
-        return self
 
     @property
     def resolved_durability(self) -> Durability | None:

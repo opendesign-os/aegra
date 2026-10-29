@@ -141,6 +141,7 @@ async def stream_graph_events(
         context: Optional context dictionary
         subgraphs: Whether to include subgraph namespaces in event types
         output_keys: Optional output channel keys for astream
+        durability: Checkpoint durability mode; None keeps LangGraph's default
         on_checkpoint: Callback invoked when checkpoint events are received
         on_task_result: Callback invoked when task result events are received
 
@@ -149,6 +150,8 @@ async def stream_graph_events(
     """
     run_id = str(config.get("configurable", {}).get("run_id", uuid.uuid4()))
     config, interrupt_kwargs = _extract_interrupt_kwargs(config)
+    # Omitted when unset so the call is unchanged for runs that never asked for a mode.
+    durability_kwargs: dict[str, Durability] = {"durability": durability} if durability is not None else {}
 
     # Prepare stream modes
     stream_modes_set: set[str] = set(stream_mode) - {"events"}
@@ -206,8 +209,8 @@ async def stream_graph_events(
                 version="v2",
                 stream_mode=list(stream_modes_set),
                 subgraphs=subgraphs,
-                durability=durability,
                 **interrupt_kwargs,
+                **durability_kwargs,
             )
         ) as stream:
             async for event in stream:
@@ -294,8 +297,8 @@ async def stream_graph_events(
                 stream_mode=list(stream_modes_set),
                 output_keys=output_keys,
                 subgraphs=subgraphs,
-                durability=durability,
                 **interrupt_kwargs,
+                **durability_kwargs,
             )
         ) as stream:
             async for event in stream:

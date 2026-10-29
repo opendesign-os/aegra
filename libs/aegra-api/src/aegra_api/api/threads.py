@@ -9,7 +9,7 @@ from typing import Any
 from uuid import uuid4
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
 from langgraph.types import StateUpdate
 from sqlalchemy import func, select, update
@@ -24,7 +24,7 @@ from aegra_api.core.database import db_manager
 from aegra_api.core.orm import Run as RunORM
 from aegra_api.core.orm import Thread as ThreadORM
 from aegra_api.core.orm import ThreadTTL as ThreadTTLORM
-from aegra_api.core.orm import get_session
+from aegra_api.core.orm import _get_session_maker, get_session
 from aegra_api.models import (
     Thread,
     ThreadCheckpoint,
@@ -32,6 +32,7 @@ from aegra_api.models import (
     ThreadCreate,
     ThreadHistoryRequest,
     ThreadList,
+    ThreadPruneRequest,
     ThreadPruneResponse,
     ThreadSearchRequest,
     ThreadState,
@@ -43,16 +44,12 @@ from aegra_api.models import (
 )
 from aegra_api.models.errors import CONFLICT, NOT_FOUND, AgentProtocolError
 from aegra_api.models.search_limit import effective_search_limit
-from aegra_api.models.threads import ThreadCountRequest, ThreadPruneRequest, ThreadTTLInfo
+from aegra_api.models.threads import ThreadCountRequest, ThreadTTLInfo
 from aegra_api.services.langgraph_service import create_thread_config, get_langgraph_service
 from aegra_api.services.streaming_service import streaming_service
 from aegra_api.services.thread_copy import copy_thread_checkpoints
 from aegra_api.services.thread_state_service import ThreadStateService
-from aegra_api.services.thread_ttl import (
-    get_thread_ttl_config,
-    prune_expired_threads_for_user,
-    prune_threads_by_id,
-)
+from aegra_api.services.thread_ttl import get_thread_ttl_config, prune_expired_threads_for_user, prune_threads_by_id
 from aegra_api.utils.jsonb import jsonb_patch, jsonb_shallow_merge
 from aegra_api.utils.run_utils import strip_pinned_config_keys
 
@@ -60,6 +57,18 @@ router = APIRouter(tags=["Threads"], dependencies=auth_dependency)
 logger = structlog.getLogger(__name__)
 
 thread_state_service = ThreadStateService()
+
+
+async def _get_thread_graph_id(thread_id: str, user: User) -> str | None:
+    """Resolve graph_id via a short-lived session, so the caller's checkpoint ops hold no pool connection."""
+    maker = _get_session_maker()
+    async with maker() as session:
+        stmt = select(ThreadORM).where(ThreadORM.thread_id == thread_id, ThreadORM.user_id == user.identity)
+        thread = await session.scalar(stmt)
+        if not thread:
+            raise HTTPException(404, f"Thread '{thread_id}' not found")
+        thread_metadata = thread.metadata_json or {}
+        return thread_metadata.get("graph_id")
 
 
 # --- Sort resolution for /threads/search ---
@@ -475,7 +484,6 @@ async def get_thread_state(
     subgraphs: bool = Query(False, description="Include states from subgraphs"),
     checkpoint_ns: str | None = Query(None, description="Checkpoint namespace to scope lookup"),
     user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
 ) -> ThreadState:
     """Get the current state of a thread.
 
@@ -484,13 +492,7 @@ async def get_thread_state(
     executed), returns an empty state.
     """
     try:
-        stmt = select(ThreadORM).where(ThreadORM.thread_id == thread_id, ThreadORM.user_id == user.identity)
-        thread = await session.scalar(stmt)
-        if not thread:
-            raise HTTPException(404, f"Thread '{thread_id}' not found")
-
-        thread_metadata = thread.metadata_json or {}
-        graph_id = thread_metadata.get("graph_id")
+        graph_id = await _get_thread_graph_id(thread_id, user)
         if not graph_id:
             logger.info(
                 "state GET: no graph_id set for thread %s, returning empty state",
@@ -575,7 +577,6 @@ async def update_thread_state(
     thread_id: str,
     request: ThreadStateUpdate,
     user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
 ) -> ThreadState | ThreadStateUpdateResponse:
     """Update thread state or retrieve it via POST.
 
@@ -598,17 +599,10 @@ async def update_thread_state(
             subgraphs=request.subgraphs or False,
             checkpoint_ns=request.checkpoint_ns,
             user=user,
-            session=session,
         )
 
     try:
-        stmt = select(ThreadORM).where(ThreadORM.thread_id == thread_id, ThreadORM.user_id == user.identity)
-        thread = await session.scalar(stmt)
-        if not thread:
-            raise HTTPException(404, f"Thread '{thread_id}' not found")
-
-        thread_metadata = thread.metadata_json or {}
-        graph_id = thread_metadata.get("graph_id")
+        graph_id = await _get_thread_graph_id(thread_id, user)
         if not graph_id:
             raise HTTPException(
                 400,
@@ -721,7 +715,6 @@ async def get_thread_state_at_checkpoint(
     subgraphs: bool | None = Query(False, description="Include states from subgraphs"),
     checkpoint_ns: str | None = Query(None, description="Checkpoint namespace to scope lookup"),
     user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
 ) -> ThreadState:
     """Get the thread state at a specific checkpoint.
 
@@ -729,13 +722,7 @@ async def get_thread_state_at_checkpoint(
     execution history. Returns 404 if the checkpoint does not exist.
     """
     try:
-        stmt = select(ThreadORM).where(ThreadORM.thread_id == thread_id, ThreadORM.user_id == user.identity)
-        thread = await session.scalar(stmt)
-        if not thread:
-            raise HTTPException(404, f"Thread '{thread_id}' not found")
-
-        thread_metadata = thread.metadata_json or {}
-        graph_id = thread_metadata.get("graph_id")
+        graph_id = await _get_thread_graph_id(thread_id, user)
         if not graph_id:
             raise HTTPException(404, f"Thread '{thread_id}' has no associated graph")
 
@@ -800,7 +787,6 @@ async def get_thread_state_at_checkpoint_post(
     thread_id: str,
     request: ThreadCheckpointPostRequest,
     user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
 ) -> ThreadState:
     """Get the thread state at a specific checkpoint (POST variant).
 
@@ -821,7 +807,6 @@ async def get_thread_state_at_checkpoint_post(
         subgraphs,
         checkpoint_ns,
         user,
-        session,
     )
     return output
 
@@ -831,7 +816,6 @@ async def get_thread_history_post(
     thread_id: str,
     request: ThreadHistoryRequest,
     user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
 ) -> list[ThreadState]:
     """Get the checkpoint history for a thread (POST variant).
 
@@ -849,13 +833,7 @@ async def get_thread_history_post(
         subgraphs = bool(request.subgraphs) if request.subgraphs is not None else False
         checkpoint_ns = request.checkpoint_ns
 
-        stmt = select(ThreadORM).where(ThreadORM.thread_id == thread_id, ThreadORM.user_id == user.identity)
-        thread = await session.scalar(stmt)
-        if not thread:
-            raise HTTPException(404, f"Thread '{thread_id}' not found")
-
-        thread_metadata = thread.metadata_json or {}
-        graph_id = thread_metadata.get("graph_id")
+        graph_id = await _get_thread_graph_id(thread_id, user)
         if not graph_id:
             logger.info(f"history POST: no graph_id set for thread {thread_id}")
             return []
@@ -934,7 +912,6 @@ async def get_thread_history_get(
     checkpoint_ns: str | None = Query(None, description="Checkpoint namespace"),
     metadata: str | None = Query(None, description="JSON-encoded metadata filter"),
     user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
 ) -> list[ThreadState]:
     """Get the checkpoint history for a thread.
 
@@ -957,7 +934,7 @@ async def get_thread_history_get(
         subgraphs=subgraphs,
         checkpoint_ns=checkpoint_ns,
     )
-    return await get_thread_history_post(thread_id, req, user, session)
+    return await get_thread_history_post(thread_id, req, user)
 
 
 @router.delete(
@@ -1026,32 +1003,36 @@ async def delete_thread(
 
 @router.post("/threads/prune", response_model=ThreadPruneResponse)
 async def prune_threads(
-    request: ThreadPruneRequest | None = None,
+    request: ThreadPruneRequest | None = Body(None),
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> ThreadPruneResponse:
-    """Immediately apply TTL policies to the caller's expired threads.
+    """Prune threads by ID, or apply TTL policies to the caller's expired threads.
 
-    Threads whose TTL has expired are deleted (strategy `delete`) or have
-    their checkpoint history compacted (strategy `keep_latest`). Threads with
-    active runs are skipped and handled once their runs settle.
+    With a body, each listed thread is deleted (strategy `delete`) or has its
+    checkpoint history compacted (strategy `keep_latest`). Without a body,
+    threads whose TTL has expired get their own TTL strategy. Threads with
+    active runs are skipped either way.
     """
     # Authorization check — pruning is a bulk threads.delete
     ctx = build_auth_context(user, "threads", "delete")
-    filters = await handle_event(ctx, {})
+    filters = await handle_event(ctx, {"thread_ids": request.thread_ids} if request else {})
     auth_filter = build_metadata_filter(ThreadORM.metadata_json, filters)
 
-    if request is not None and request.thread_ids:
-        deleted, pruned = await prune_threads_by_id(
-            session,
-            user_id=user.identity,
-            thread_ids=request.thread_ids,
-            strategy=request.strategy or "delete",
-            auth_filter=auth_filter,
-        )
-    else:
+    if request is None or not request.thread_ids:
         deleted, pruned = await prune_expired_threads_for_user(session, user_id=user.identity, auth_filter=auth_filter)
-    return ThreadPruneResponse(deleted=deleted, pruned=pruned)
+        return ThreadPruneResponse(pruned_count=deleted + pruned, deleted=deleted, pruned=pruned)
+
+    count = await prune_threads_by_id(
+        session,
+        thread_ids=request.thread_ids,
+        strategy=request.strategy,
+        user_id=user.identity,
+        auth_filter=auth_filter,
+    )
+    if request.strategy == "delete":
+        return ThreadPruneResponse(pruned_count=count, deleted=count)
+    return ThreadPruneResponse(pruned_count=count, pruned=count)
 
 
 @router.post("/threads/count")

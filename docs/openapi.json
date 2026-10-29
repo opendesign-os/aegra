@@ -3,7 +3,7 @@
   "info": {
     "title": "Aegra",
     "description": "Production-ready Agent Protocol server",
-    "version": "0.10.7"
+    "version": "0.11.0"
   },
   "paths": {
     "/ok": {
@@ -653,7 +653,7 @@
           "Assistants"
         ],
         "summary": "Get Assistant Schemas",
-        "description": "Get the JSON schemas for an assistant's graph.\n\nReturns the input, output, state, and config schemas derived from the\nunderlying graph's type annotations.",
+        "description": "Get the JSON schemas for an assistant's graph.\n\nReturns ``graph_id`` and the input, output, state, config and context\nschemas derived from the graph's type annotations. A schema the server\ncould not derive is ``null``; the key is always present.",
         "operationId": "get_assistant_schemas_assistants__assistant_id__schemas_get",
         "parameters": [
           {
@@ -1726,7 +1726,7 @@
           "Threads"
         ],
         "summary": "Prune Threads",
-        "description": "Immediately apply TTL policies to the caller's expired threads.\n\nThreads whose TTL has expired are deleted (strategy `delete`) or have\ntheir checkpoint history compacted (strategy `keep_latest`). Threads with\nactive runs are skipped and handled once their runs settle.",
+        "description": "Prune threads by ID, or apply TTL policies to the caller's expired threads.\n\nWith a body, each listed thread is deleted (strategy `delete`) or has its\ncheckpoint history compacted (strategy `keep_latest`). Without a body,\nthreads whose TTL has expired get their own TTL strategy. Threads with\nactive runs are skipped either way.",
         "operationId": "prune_threads_threads_prune_post",
         "requestBody": {
           "content": {
@@ -2746,7 +2746,7 @@
           "Thread Runs"
         ],
         "summary": "Cancel Run Endpoint",
-        "description": "Cancel or interrupt a running execution.\n\nUse `action=cancel` to hard-cancel the run immediately, or\n`action=interrupt` to cooperatively interrupt (the graph can handle the\ninterrupt and save partial state). Set `wait=1` to wait up to 10 seconds\nfor the background task to settle before returning the updated run. The\nresponse may still report `pending` or `running` if the timeout expires.\nWithout `wait=1`, a live-owned run is cancelled asynchronously, so the\nresponse may still report `pending` or `running`.",
+        "description": "Cancel a running execution.\n\n`action=cancel` and `action=interrupt` are currently aliases: both stop\nthe run immediately and finalize it as interrupted. Neither action\nprovides cooperative graph-level handling or guarantees saved partial\nstate. Set `wait=1` to wait up to 10 seconds\nfor the background task to settle before returning the updated run. The\nresponse may still report `pending` or `running` if the timeout expires.\nWithout `wait=1`, a live-owned run is cancelled asynchronously, so the\nresponse may still report `pending` or `running`.",
         "operationId": "cancel_run_endpoint_threads__thread_id__runs__run_id__cancel_post",
         "parameters": [
           {
@@ -2791,11 +2791,11 @@
                 "interrupt"
               ],
               "type": "string",
-              "description": "Cancellation strategy: 'cancel' for hard cancel, 'interrupt' for cooperative interrupt.",
+              "description": "Accepted for compatibility: 'cancel' and 'interrupt' both stop the run immediately and finalize it as interrupted.",
               "default": "cancel",
               "title": "Action"
             },
-            "description": "Cancellation strategy: 'cancel' for hard cancel, 'interrupt' for cooperative interrupt."
+            "description": "Accepted for compatibility: 'cancel' and 'interrupt' both stop the run immediately and finalize it as interrupted."
           }
         ],
         "responses": {
@@ -2851,11 +2851,11 @@
                 "interrupt"
               ],
               "type": "string",
-              "description": "Cancellation strategy: 'cancel' for hard cancel, 'interrupt' for cooperative interrupt.",
+              "description": "Accepted for compatibility: 'cancel' and 'interrupt' both stop the run immediately and finalize it as interrupted.",
               "default": "interrupt",
               "title": "Action"
             },
-            "description": "Cancellation strategy: 'cancel' for hard cancel, 'interrupt' for cooperative interrupt."
+            "description": "Accepted for compatibility: 'cancel' and 'interrupt' both stop the run immediately and finalize it as interrupted."
           }
         ],
         "requestBody": {
@@ -4068,40 +4068,88 @@
       },
       "AgentSchemas": {
         "properties": {
+          "graph_id": {
+            "type": "string",
+            "title": "Graph Id",
+            "description": "Identifier of the graph these schemas describe."
+          },
           "input_schema": {
-            "additionalProperties": true,
-            "type": "object",
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Input Schema",
             "description": "JSON Schema for agent inputs"
           },
           "output_schema": {
-            "additionalProperties": true,
-            "type": "object",
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Output Schema",
             "description": "JSON Schema for agent outputs"
           },
           "state_schema": {
-            "additionalProperties": true,
-            "type": "object",
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "State Schema",
             "description": "JSON Schema for agent state"
           },
           "config_schema": {
-            "additionalProperties": true,
-            "type": "object",
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Config Schema",
             "description": "JSON Schema for agent config"
+          },
+          "context_schema": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context Schema",
+            "description": "JSON Schema for the graph's run context"
           }
         },
         "type": "object",
         "required": [
+          "graph_id",
           "input_schema",
           "output_schema",
           "state_schema",
-          "config_schema"
+          "config_schema",
+          "context_schema"
         ],
         "title": "AgentSchemas",
-        "description": "Agent schema definitions for client integration"
+        "description": "Agent schema definitions for client integration.\n\nMirrors ``langgraph_sdk.schema.GraphSchema``. A schema the server could not\nderive from the graph is ``null``."
       },
       "Assistant": {
         "properties": {
@@ -4464,14 +4512,7 @@
       "AssistantUpdate": {
         "properties": {
           "name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
+            "type": "string",
             "title": "Name",
             "description": "The name of the assistant. Unchanged when omitted."
           },
@@ -4501,14 +4542,7 @@
             "description": "Configuration to use for the graph. Unchanged when omitted."
           },
           "graph_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
+            "type": "string",
             "title": "Graph Id",
             "description": "The ID of the graph. Unchanged when omitted."
           },
@@ -4541,7 +4575,7 @@
         },
         "type": "object",
         "title": "AssistantUpdate",
-        "description": "Request model for partially updating assistants.\n\nEvery field is optional and defaults to ``None`` so that an omitted field\nis distinguishable from an explicit one via ``model_dump(exclude_unset=True)``:\nomitting ``config`` keeps the stored config, sending ``{\"config\": {}}`` clears it."
+        "description": "Request model for partially updating assistants.\n\nEvery field is optional and defaults to ``None`` so that an omitted field\nis distinguishable from an explicit one via ``model_dump(exclude_unset=True)``:\nomitting ``config`` keeps the stored config, sending ``{\"config\": {}}`` clears it.\n\nA null clears ``description`` and reads as empty for the other dict fields.\n``name`` and ``graph_id`` back NOT NULL columns and refuse one."
       },
       "Body_set_assistant_latest_assistants__assistant_id__latest_post": {
         "properties": {
@@ -4808,6 +4842,17 @@
               }
             ],
             "title": "Durability"
+          },
+          "checkpoint_during": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checkpoint During"
           },
           "stream_resumable": {
             "anyOf": [
@@ -5653,6 +5698,36 @@
             "title": "Checkpoint Id",
             "description": "Checkpoint to run from. Short form of checkpoint={'checkpoint_id': ...}; 'checkpoint' wins if both set."
           },
+          "durability": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "sync",
+                  "async",
+                  "exit"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Durability",
+            "description": "Checkpoint persistence: 'sync' after each step, 'async' (default) alongside the next step, or 'exit' only when the run ends."
+          },
+          "checkpoint_during": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checkpoint During",
+            "description": "Deprecated alias for 'durability': True maps to 'async', False to 'exit'. Cannot be combined with 'durability'.",
+            "deprecated": true
+          },
           "stream": {
             "type": "boolean",
             "title": "Stream",
@@ -5758,36 +5833,6 @@
             ],
             "title": "After Seconds",
             "description": "Seconds to wait before starting the run. Use to schedule a future run."
-          },
-          "durability": {
-            "anyOf": [
-              {
-                "type": "string",
-                "enum": [
-                  "sync",
-                  "async",
-                  "exit"
-                ]
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Durability",
-            "description": "Checkpoint persistence: 'sync' after each step, 'async' (default) alongside the next step, or 'exit' only when the run ends."
-          },
-          "checkpoint_during": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Checkpoint During",
-            "description": "Deprecated alias for 'durability': True maps to 'async', False to 'exit'. Cannot be combined with 'durability'.",
-            "deprecated": true
           },
           "stream_resumable": {
             "type": "boolean",
@@ -6787,41 +6832,41 @@
               }
             ],
             "title": "Thread Ids",
-            "description": "Threads to prune; omit to sweep expired threads"
+            "description": "Threads to prune. Ids the caller cannot see are skipped. Omit to sweep expired threads."
           },
           "strategy": {
-            "anyOf": [
-              {
-                "type": "string",
-                "enum": [
-                  "delete",
-                  "keep_latest"
-                ]
-              },
-              {
-                "type": "null"
-              }
+            "type": "string",
+            "enum": [
+              "delete",
+              "keep_latest"
             ],
             "title": "Strategy",
-            "description": "'delete' removes the thread, 'keep_latest' compacts its history"
+            "description": "'delete' removes the threads entirely; 'keep_latest' keeps each thread and its latest state.",
+            "default": "delete"
           }
         },
         "type": "object",
         "title": "ThreadPruneRequest",
-        "description": "Request model for pruning threads."
+        "description": "Request body for POST /threads/prune"
       },
       "ThreadPruneResponse": {
         "properties": {
+          "pruned_count": {
+            "type": "integer",
+            "title": "Pruned Count",
+            "description": "Threads deleted or pruned by this request",
+            "default": 0
+          },
           "deleted": {
             "type": "integer",
             "title": "Deleted",
-            "description": "Expired threads fully deleted (strategy 'delete')",
+            "description": "Threads fully deleted (strategy 'delete')",
             "default": 0
           },
           "pruned": {
             "type": "integer",
             "title": "Pruned",
-            "description": "Expired threads whose history was pruned (strategy 'keep_latest')",
+            "description": "Threads whose history was pruned (strategy 'keep_latest')",
             "default": 0
           }
         },

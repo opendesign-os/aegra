@@ -105,19 +105,24 @@ class ThreadUpdate(BaseModel):
 
 
 class ThreadPruneRequest(BaseModel):
-    """Request model for pruning threads."""
+    """Request body for POST /threads/prune"""
 
-    thread_ids: list[str] | None = Field(None, description="Threads to prune; omit to sweep expired threads")
-    strategy: Literal["delete", "keep_latest"] | None = Field(
-        None, description="'delete' removes the thread, 'keep_latest' compacts its history"
+    thread_ids: list[str] | None = Field(
+        None,
+        description="Threads to prune. Ids the caller cannot see are skipped. Omit to sweep expired threads.",
+    )
+    strategy: Literal["delete", "keep_latest"] = Field(
+        "delete",
+        description="'delete' removes the threads entirely; 'keep_latest' keeps each thread and its latest state.",
     )
 
 
 class ThreadPruneResponse(BaseModel):
     """Response model for POST /threads/prune"""
 
-    deleted: int = Field(0, description="Expired threads fully deleted (strategy 'delete')")
-    pruned: int = Field(0, description="Expired threads whose history was pruned (strategy 'keep_latest')")
+    pruned_count: int = Field(0, description="Threads deleted or pruned by this request")
+    deleted: int = Field(0, description="Threads fully deleted (strategy 'delete')")
+    pruned: int = Field(0, description="Threads whose history was pruned (strategy 'keep_latest')")
 
 
 class ThreadTTLInfo(BaseModel):
@@ -210,7 +215,9 @@ class ThreadSearchRequest(BaseModel):
         description="Sort direction (SDK-compatible). Defaults to 'desc' when sort_by is set.",
     )
     ids: list[str] | None = Field(None, description="Restrict results to these thread IDs")
-    select: list[ThreadSelectField] | None = Field(None, description="Fields to return; all fields when omitted")
+    select: list[ThreadSelectField] | None = Field(
+        None, exclude=True, description="Fields to return; all fields when omitted"
+    )
     values: dict[str, Any] | None = Field(None, description="State values to filter on")
     extract: dict[str, str] | None = Field(None, description="Alias to JSONB path projections")
 

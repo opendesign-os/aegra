@@ -63,6 +63,7 @@ def _build_run_create(cron: CronORM) -> RunCreate:
         stream_mode=payload.get("stream_mode"),
         multitask_strategy=payload.get("multitask_strategy"),
         durability=payload.get("durability"),
+        checkpoint_during=payload.get("checkpoint_during"),
         stream_resumable=payload.get("stream_resumable") or False,
         webhook=payload.get("webhook"),
         # Cron metadata_dict is stored on the cron record for search/filter, not

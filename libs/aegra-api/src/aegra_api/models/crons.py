@@ -65,6 +65,7 @@ class CronCreate(BaseModel):
     stream_subgraphs: bool | None = None
     timezone: str | None = Field(None, max_length=_TIMEZONE_MAX_LEN)
     durability: Durability | None = None
+    checkpoint_during: bool | None = None
     stream_resumable: bool | None = None
 
     @model_validator(mode="after")

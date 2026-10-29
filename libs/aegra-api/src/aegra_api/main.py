@@ -1,7 +1,7 @@
 """FastAPI application for Aegra (Agent Protocol Server)"""
 
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Any
 
 import structlog
@@ -45,6 +45,7 @@ from aegra_api.services.executor import executor
 from aegra_api.services.langgraph_service import get_langgraph_service
 from aegra_api.services.lease_reaper import lease_reaper
 from aegra_api.services.mcp_server import mcp_transport
+from aegra_api.services.run_preparation import get_default_durability
 from aegra_api.services.thread_ttl import get_thread_ttl_config, thread_ttl_sweeper
 from aegra_api.settings import settings
 from aegra_api.utils.setup_logging import setup_logging
@@ -88,6 +89,9 @@ def _log_connection_help(error: Exception) -> None:
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     """FastAPI lifespan context manager for startup/shutdown"""
+    # Resolve the durability default up front: an invalid value fails the boot, not every run.
+    get_default_durability()
+
     # Multi-pod K8s: set RUN_MIGRATIONS_ON_STARTUP=false + run `aegra db upgrade`
     # out-of-band. See docs/guides/deployment.mdx.
     if settings.app.RUN_MIGRATIONS_ON_STARTUP:
@@ -106,73 +110,68 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         _log_connection_help(e)
         raise
 
-    # Observability
-    setup_observability()
+    # Each cleanup is registered once its step has started; they run in reverse start order
+    # on shutdown (ttl sweeper → cron → MCP → reaper → executor drains jobs → broker → Redis → DB).
+    async with AsyncExitStack() as stack:
+        stack.push_async_callback(db_manager.close)
 
-    # Initialize LangGraph service
-    langgraph_service = get_langgraph_service()
-    await langgraph_service.initialize()
+        # Observability
+        setup_observability()
 
-    # Initialize Redis broker (if enabled)
-    if settings.redis.REDIS_BROKER_ENABLED:
-        try:
-            await redis_manager.initialize()
-        except (ConnectionError, OSError) as e:
-            logger.error(
-                "Cannot connect to Redis. "
-                "Set REDIS_BROKER_ENABLED=false for single-instance mode without Redis, "
-                "or ensure Redis is running at REDIS_URL.",
-                redis_url=settings.redis.REDIS_URL,
-                error=str(e),
+        # Initialize LangGraph service
+        langgraph_service = get_langgraph_service()
+        await langgraph_service.initialize()
+
+        # Initialize Redis broker (if enabled)
+        if settings.redis.REDIS_BROKER_ENABLED:
+            try:
+                await redis_manager.initialize()
+            except (ConnectionError, OSError) as e:
+                logger.error(
+                    "Cannot connect to Redis. "
+                    "Set REDIS_BROKER_ENABLED=false for single-instance mode without Redis, "
+                    "or ensure Redis is running at REDIS_URL.",
+                    redis_url=settings.redis.REDIS_URL,
+                    error=str(e),
+                )
+                raise
+            stack.push_async_callback(redis_manager.close)
+        else:
+            logger.warning(
+                "Running without Redis broker. Background runs have no crash recovery "
+                "or horizontal scaling. Set REDIS_BROKER_ENABLED=true and configure "
+                "REDIS_URL for production use.",
             )
-            raise
-    else:
-        logger.warning(
-            "Running without Redis broker. Background runs have no crash recovery "
-            "or horizontal scaling. Set REDIS_BROKER_ENABLED=true and configure "
-            "REDIS_URL for production use.",
-        )
 
-    # Start broker manager (cleanup task for in-memory, cancel listener for Redis)
-    await broker_manager.start()
+        # Start broker manager (cleanup task for in-memory, cancel listener for Redis)
+        await broker_manager.start()
+        stack.push_async_callback(broker_manager.stop)
 
-    # Start executor (spawns worker coroutines when Redis is enabled)
-    await executor.start()
+        # Start executor (spawns worker coroutines when Redis is enabled)
+        await executor.start()
+        stack.push_async_callback(executor.stop)
 
-    # Start lease reaper (recovers crashed worker runs, Redis mode only)
-    if settings.redis.REDIS_BROKER_ENABLED:
-        await lease_reaper.start()
+        # Start lease reaper (recovers crashed worker runs, Redis mode only)
+        if settings.redis.REDIS_BROKER_ENABLED:
+            await lease_reaper.start()
+            stack.push_async_callback(lease_reaper.stop)
 
-    # MCP transport: stateless streamable HTTP over /mcp/
-    await mcp_transport.start()
+        # MCP transport: stateless streamable HTTP over /mcp/
+        await mcp_transport.start()
+        stack.push_async_callback(mcp_transport.stop)
 
-    # Start cron scheduler (fires due cron jobs)
-    if settings.cron.CRON_ENABLED:
-        await cron_scheduler.start()
+        # Start cron scheduler (fires due cron jobs)
+        if settings.cron.CRON_ENABLED:
+            await cron_scheduler.start()
+            stack.push_async_callback(cron_scheduler.stop)
 
-    # Start thread TTL sweeper (deletes/compacts expired threads); resolving
-    # the config here also fails fast on an invalid retention policy.
-    if get_thread_ttl_config() is not None:
-        await thread_ttl_sweeper.start()
+        # Start thread TTL sweeper (deletes/compacts expired threads); resolving
+        # the config here also fails fast on an invalid retention policy.
+        if get_thread_ttl_config() is not None:
+            await thread_ttl_sweeper.start()
+            stack.push_async_callback(thread_ttl_sweeper.stop)
 
-    yield
-
-    # Shutdown order: ttl sweeper → cron → reaper → executor (drains jobs) → broker → Redis → DB
-    if get_thread_ttl_config() is not None:
-        await thread_ttl_sweeper.stop()
-    if settings.cron.CRON_ENABLED:
-        await cron_scheduler.stop()
-    if settings.redis.REDIS_BROKER_ENABLED:
-        await lease_reaper.stop()
-    await mcp_transport.stop()
-    await executor.stop()
-    await broker_manager.stop()
-
-    # Close Redis broker (if enabled)
-    if settings.redis.REDIS_BROKER_ENABLED:
-        await redis_manager.close()
-
-    await db_manager.close()
+        yield
 
 
 # Define core exception handlers
@@ -298,24 +297,26 @@ def _prepend_dependencies(route: APIRoute, deps: list[Any]) -> int:
 def _add_cors_middleware(app: FastAPI, cors_config: CorsConfig | None) -> None:
     """Add CORS middleware with config or defaults.
 
-    When ``allow_origins`` is ``["*"]`` (the default), ``allow_credentials``
-    defaults to ``False`` because the combination of a wildcard origin with
-    credentials is insecure — it allows any site to make credentialed requests.
-    To enable ``allow_credentials``, specify concrete origins.
+    When ``allow_origin_regex`` is configured, ``allow_origins`` defaults to an
+    empty list so the regex is useful, and ``allow_credentials`` defaults to
+    ``False``. Without a regex, existing origin and credential defaults apply.
 
     Args:
         app: FastAPI application instance
         cors_config: CORS configuration dict or None for defaults
     """
     if cors_config:
-        origins = cors_config.get("allow_origins", ["*"])
+        allow_origin_regex = cors_config.get("allow_origin_regex")
+        has_origin_regex = allow_origin_regex is not None
+        origins = cors_config.get("allow_origins", [] if has_origin_regex else ["*"])
         credentials = cors_config.get(
             "allow_credentials",
-            origins not in (["*"], "*"),
+            False if has_origin_regex else origins not in (["*"], "*"),
         )
         app.add_middleware(
             CORSMiddleware,
             allow_origins=origins,
+            allow_origin_regex=allow_origin_regex,
             allow_credentials=credentials,
             allow_methods=cors_config.get("allow_methods", ["*"]),
             allow_headers=cors_config.get("allow_headers", ["*"]),

@@ -33,9 +33,10 @@ class TestDurability:
     def test_omitted_leaves_runtime_default(self) -> None:
         assert RunCreate.model_validate(_payload()).resolved_durability is None
 
-    def test_rejects_both_forms_together(self) -> None:
-        with pytest.raises(ValidationError, match="Cannot specify both"):
-            RunCreate.model_validate(_payload(durability="sync", checkpoint_during=False))
+    def test_durability_wins_over_the_deprecated_alias(self) -> None:
+        request = RunCreate.model_validate(_payload(durability="sync", checkpoint_during=False))
+
+        assert request.resolved_durability == "sync"
 
 
 class TestWebhook:
