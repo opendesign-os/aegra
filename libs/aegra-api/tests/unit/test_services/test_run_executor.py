@@ -1,6 +1,7 @@
 """Unit tests for run_executor service."""
 
 import asyncio
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -20,6 +21,7 @@ from aegra_api.services.run_executor import (
     _timeout_cancellations,
     execute_run,
 )
+from aegra_api.utils.run_utils import resolve_graph_context
 
 
 async def _empty_async_gen():  # type: ignore[no-untyped-def]
@@ -211,7 +213,7 @@ class TestStreamNativeV2InterruptDetection:
         ):
             bm.allocate_event_id = AsyncMock(return_value="run-1_event_1")
             ss.put_to_broker = AsyncMock()
-            await _stream_native_v2(_make_job(), MagicMock(), {"msg": "x"}, {}, result)
+            await _stream_native_v2(_make_job(), MagicMock(), {"msg": "x"}, {}, {}, result)
         return result.has_interrupt
 
     @pytest.mark.asyncio
@@ -247,7 +249,7 @@ class TestDurabilityForwarding:
     async def test_legacy_stream_receives_job_durability(self, durability: Durability | None) -> None:
         stream = MagicMock(return_value=_empty_async_gen())
         with patch.object(run_executor_module, "stream_graph_events", stream):
-            await _stream_legacy(self._job(durability), MagicMock(), {"msg": "x"}, {}, ["values"], _GraphResult())
+            await _stream_legacy(self._job(durability), MagicMock(), {"msg": "x"}, {}, ["values"], {}, _GraphResult())
 
         assert stream.call_args.kwargs["durability"] == durability
 
@@ -256,9 +258,59 @@ class TestDurabilityForwarding:
     async def test_native_v2_stream_receives_job_durability(self, durability: Durability | None) -> None:
         stream = MagicMock(return_value=_empty_async_gen())
         with patch.object(run_executor_module, "stream_native_v3_events", stream):
-            await _stream_native_v2(self._job(durability), MagicMock(), {"msg": "x"}, {}, _GraphResult())
+            await _stream_native_v2(self._job(durability), MagicMock(), {"msg": "x"}, {}, {}, _GraphResult())
 
         assert stream.call_args.kwargs["durability"] == durability
+
+
+class TestContextForwarding:
+    """Both producers get the same context, trimmed to what the graph declares."""
+
+    @staticmethod
+    def _job(context: dict[str, Any]) -> RunJob:
+        return RunJob(
+            identity=RunIdentity(run_id="run-1", thread_id="thread-1", graph_id="graph-1"),
+            user=User(identity="user-1"),
+            execution=RunExecution(input_data={"msg": "hello"}, context=context),
+        )
+
+    @staticmethod
+    def _graph() -> MagicMock:
+        graph = MagicMock()
+        graph.get_context_jsonschema.return_value = {"properties": {"model": {"type": "string"}}}
+        return graph
+
+    @pytest.mark.asyncio
+    async def test_legacy_stream_receives_the_given_context(self) -> None:
+        stream = MagicMock(return_value=_empty_async_gen())
+        context = await resolve_graph_context(self._graph(), {"model": "gpt-4", "tenant": "acme"})
+        with patch.object(run_executor_module, "stream_graph_events", stream):
+            await _stream_legacy(self._job(context), MagicMock(), {}, {}, ["values"], context, _GraphResult())
+
+        assert stream.call_args.kwargs["context"] == {"model": "gpt-4"}
+
+    @pytest.mark.asyncio
+    async def test_native_v2_stream_receives_the_given_context(self) -> None:
+        stream = MagicMock(return_value=_empty_async_gen())
+        context = await resolve_graph_context(self._graph(), {"model": "gpt-4", "tenant": "acme"})
+        with patch.object(run_executor_module, "stream_native_v3_events", stream):
+            await _stream_native_v2(self._job(context), MagicMock(), {}, {}, context, _GraphResult())
+
+        assert stream.call_args.kwargs["context"] == {"model": "gpt-4"}
+
+    @pytest.mark.asyncio
+    async def test_a_key_the_graph_never_declared_would_raise_in_langgraph(self) -> None:
+        """Why the trim exists: LangGraph builds the context object from the schema."""
+        graph = self._graph()
+
+        assert await resolve_graph_context(graph, {"model": "gpt-4", "tenant": "acme"}) == {"model": "gpt-4"}
+
+    @pytest.mark.asyncio
+    async def test_a_graph_that_cannot_describe_its_context_keeps_it(self) -> None:
+        graph = MagicMock()
+        graph.get_context_jsonschema.side_effect = AttributeError("js graph")
+
+        assert await resolve_graph_context(graph, {"tenant": "acme"}) == {"tenant": "acme"}
 
 
 class TestSignalEndEvent:

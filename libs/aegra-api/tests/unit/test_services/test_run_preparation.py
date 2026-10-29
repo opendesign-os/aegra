@@ -9,14 +9,18 @@ import pytest
 from fastapi import HTTPException
 
 from aegra_api.config import CheckpointerConfig
+from aegra_api.core.orm import Assistant as AssistantORM
+from aegra_api.models.auth import User
 from aegra_api.models.runs import RunCreate
 from aegra_api.services import run_preparation as mod
 from aegra_api.services.run_preparation import (
+    _prepare_run,
     _resolve_checkpoint,
     _resolve_durability,
     _validate_resume_command,
     get_default_durability,
 )
+from tests.fixtures.database import DummySessionBase
 
 
 @pytest.fixture(autouse=True)
@@ -189,3 +193,78 @@ class TestResolveDurability:
     def test_none_without_run_value_or_server_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(mod, "get_default_durability", lambda: None)
         assert _resolve_durability(RunCreate(assistant_id="agent", input={"x": 1})) is None
+
+
+class TestAssistantRuntimeMerge:
+    """Where an assistant's config and context land on the job.
+
+    Every entry point reaches a run through ``_prepare_run`` — the HTTP API, the
+    cron scheduler, the A2A task endpoint and the MCP tool call — so this is the
+    one place the assistant's runtime settings are picked up.
+    """
+
+    @staticmethod
+    def _assistant() -> AssistantORM:
+        return AssistantORM(
+            assistant_id="asst-1",
+            graph_id="agent",
+            user_id="user-1",
+            config={"configurable": {"model": "gpt-4", "temperature": 0}, "tags": ["prod"]},
+            context={"model": "gpt-4", "tenant": "acme"},
+        )
+
+    class _Session(DummySessionBase):
+        def __init__(self, assistant: AssistantORM) -> None:
+            self.assistant = assistant
+
+        async def scalar(self, _stmt: Any) -> Any:
+            return self.assistant
+
+        async def execute(self, _stmt: Any) -> None:
+            return None
+
+    async def _job(self, request: RunCreate, monkeypatch: pytest.MonkeyPatch) -> Any:
+        monkeypatch.setattr(
+            mod, "get_langgraph_service", lambda: SimpleNamespace(list_graphs=lambda: {"agent": object()})
+        )
+        monkeypatch.setattr(mod, "update_thread_metadata", AsyncMock())
+        monkeypatch.setattr(mod, "set_thread_status", AsyncMock())
+        monkeypatch.setattr(mod.executor, "submit", AsyncMock())
+
+        _run_id, _run, job = await _prepare_run(
+            cast(Any, self._Session(self._assistant())),
+            "thread-1",
+            request,
+            User(identity="user-1"),
+            initial_status="pending",
+        )
+        return job
+
+    @pytest.mark.asyncio
+    async def test_a_run_that_sets_nothing_inherits_the_assistant(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        job = await self._job(RunCreate(assistant_id="agent", input={"x": 1}), monkeypatch)
+
+        assert job.execution.config["configurable"] == {"model": "gpt-4", "temperature": 0}
+        assert job.execution.config["tags"] == ["prod"]
+        assert job.execution.context == {"model": "gpt-4", "tenant": "acme"}
+
+    @pytest.mark.asyncio
+    async def test_one_configurable_key_does_not_blank_the_assistant(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A cron storing its own config used to drop the model the assistant pinned."""
+        request = RunCreate(assistant_id="agent", input={"x": 1}, config={"configurable": {"run_name": "nightly"}})
+
+        job = await self._job(request, monkeypatch)
+
+        assert job.execution.config["configurable"] == {
+            "model": "gpt-4",
+            "temperature": 0,
+            "run_name": "nightly",
+        }
+
+    @pytest.mark.asyncio
+    async def test_the_run_wins_where_the_two_overlap(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        request = RunCreate(assistant_id="agent", input={"x": 1}, context={"model": "gpt-5"})
+
+        job = await self._job(request, monkeypatch)
+
+        assert job.execution.context == {"model": "gpt-5", "tenant": "acme"}

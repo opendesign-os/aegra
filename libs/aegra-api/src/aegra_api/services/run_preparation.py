@@ -31,7 +31,7 @@ from aegra_api.services.run_status import set_thread_status
 from aegra_api.settings import settings
 from aegra_api.utils.assistants import resolve_assistant_id
 from aegra_api.utils.jsonb import jsonb_patch, jsonb_shallow_merge
-from aegra_api.utils.run_utils import _merge_jsonb
+from aegra_api.utils.run_utils import _merge_jsonb, merge_run_config
 
 logger = structlog.getLogger(__name__)
 
@@ -296,7 +296,7 @@ async def _prepare_run(
     if not assistant:
         raise HTTPException(404, f"Assistant '{request.assistant_id}' not found")
 
-    config = _merge_jsonb(assistant.config, config)
+    config = merge_run_config(assistant.config, config)
     context = _merge_jsonb(assistant.context, context)
 
     # Validate the assistant's graph exists

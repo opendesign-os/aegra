@@ -33,6 +33,9 @@ class DummyLogger:
     async def adebug(self, *args, **kwargs):
         self.calls.append((args, kwargs))
 
+    async def awarning(self, *args, **kwargs):
+        self.calls.append((args, kwargs))
+
 
 @pytest.mark.unit
 @pytest.mark.asyncio
@@ -63,11 +66,11 @@ async def test_filter_with_schema_filters_keys():
     filtered = await run_utils._filter_context_by_schema(context, schema)
     assert filtered == {"a": 1}
 
-    # ensure adebug was called for the filtered-out key
+    # one warning naming every dropped key, not a debug line per key
     assert len(dummy.calls) == 1
     _, kw = dummy.calls[0]
-    assert kw.get("context_key") == "b"
-    assert "available_keys" in kw
+    assert kw.get("dropped_keys") == ["b"]
+    assert kw.get("declared_keys") == ["a"]
 
 
 @pytest.mark.unit
@@ -84,6 +87,45 @@ async def test_filter_with_empty_properties_returns_context():
     result = await run_utils._filter_context_by_schema(context, schema)
     # no properties defined -> do not filter
     assert result == context
+
+
+class TestMergeRunConfig:
+    """A run's config wins key by key, but it must not blank the assistant's configurable."""
+
+    def test_the_assistant_configurable_survives_a_run_that_sets_one_key(self) -> None:
+        from aegra_api.utils.run_utils import merge_run_config
+
+        assistant = {"configurable": {"model": "gpt-4", "temperature": 0}, "tags": ["prod"]}
+        run = {"configurable": {"run_name": "nightly"}}
+
+        merged = merge_run_config(assistant, run)
+
+        assert merged["configurable"] == {"model": "gpt-4", "temperature": 0, "run_name": "nightly"}
+        assert merged["tags"] == ["prod"]
+
+    def test_the_run_wins_on_a_shared_configurable_key(self) -> None:
+        from aegra_api.utils.run_utils import merge_run_config
+
+        merged = merge_run_config({"configurable": {"model": "gpt-4"}}, {"configurable": {"model": "gpt-5"}})
+
+        assert merged["configurable"] == {"model": "gpt-5"}
+
+    def test_other_top_level_keys_are_replaced_whole(self) -> None:
+        from aegra_api.utils.run_utils import merge_run_config
+
+        merged = merge_run_config({"tags": ["a"], "recursion_limit": 50}, {"tags": ["b"]})
+
+        assert merged == {"tags": ["b"], "recursion_limit": 50}
+
+    def test_no_configurable_key_is_invented(self) -> None:
+        from aegra_api.utils.run_utils import merge_run_config
+
+        assert merge_run_config({"tags": ["a"]}, None) == {"tags": ["a"]}
+
+    def test_a_non_mapping_configurable_is_left_to_the_top_level_merge(self) -> None:
+        from aegra_api.utils.run_utils import merge_run_config
+
+        assert merge_run_config({"configurable": "nonsense"}, {})["configurable"] == "nonsense"
 
 
 class TestMapCommandToLangGraph:

@@ -64,6 +64,27 @@ def _merge_jsonb(*objects: dict) -> dict:
     return result
 
 
+def _configurable(config: dict[str, Any] | None) -> dict[str, Any] | None:
+    value = (config or {}).get("configurable")
+    return value if isinstance(value, dict) else None
+
+
+def merge_run_config(assistant_config: dict[str, Any] | None, run_config: dict[str, Any] | None) -> dict[str, Any]:
+    """Merge a run's config over the assistant's.
+
+    The top level follows PostgreSQL's JSONB ``||``: a key the run sets replaces
+    the assistant's. ``configurable`` is merged one level deeper instead, the way
+    LangChain's own ``merge_configs`` does it — replacing it wholesale would mean
+    a run that pins one configurable key silently drops the model, and everything
+    else the assistant had set alongside it.
+    """
+    merged = _merge_jsonb(assistant_config, run_config)
+    configurable = _merge_jsonb(_configurable(assistant_config), _configurable(run_config))
+    if configurable:
+        merged["configurable"] = configurable
+    return merged
+
+
 async def _filter_context_by_schema(context: dict[str, Any], context_schema: dict | None) -> dict[str, Any]:
     """Filter context parameters based on the context schema."""
     if not context_schema or not context:
@@ -74,16 +95,33 @@ async def _filter_context_by_schema(context: dict[str, Any], context_schema: dic
     if not properties:
         return context
 
-    # Filter context to only include parameters defined in the schema
-    filtered_context = {}
-    for key, value in context.items():
-        if key in properties:
-            filtered_context[key] = value
-        else:
-            await logger.adebug(
-                f"Filtering out context parameter '{key}' not found in context schema",
-                context_key=key,
-                available_keys=list(properties.keys()),
-            )
-
+    filtered_context = {key: value for key, value in context.items() if key in properties}
+    dropped = sorted(set(context) - set(filtered_context))
+    if dropped:
+        # Loud rather than debug: these keys never reach the graph, and the run
+        # carries on as though the assistant had never set them.
+        await logger.awarning(
+            "Dropping context keys the graph does not declare",
+            dropped_keys=dropped,
+            declared_keys=sorted(properties),
+        )
     return filtered_context
+
+
+async def resolve_graph_context(graph: Any, context: dict[str, Any] | None) -> dict[str, Any]:
+    """Trim a run's context to what the graph declares, for every streaming path.
+
+    LangGraph builds the context object from the graph's own schema and raises a
+    TypeError on a key it has never heard of, so an assistant carrying more than
+    the graph declares has to be trimmed before the run starts. A graph that
+    cannot describe its context — a JS graph, or one with no schema — takes the
+    context as it stands.
+    """
+    if not context:
+        return context or {}
+    try:
+        context_schema = graph.get_context_jsonschema()
+    except Exception as exc:  # noqa: BLE001 — a graph that cannot describe itself still runs
+        await logger.adebug(f"Failed to get context schema for filtering: {exc}", exc_info=exc)
+        return context
+    return await _filter_context_by_schema(context, context_schema)

@@ -24,7 +24,7 @@ from aegra_api.services.langgraph_service import create_run_config, get_langgrap
 from aegra_api.services.run_status import finalize_run, start_run
 from aegra_api.services.streaming_service import streaming_service
 from aegra_api.settings import settings
-from aegra_api.utils.run_utils import map_command_to_langgraph
+from aegra_api.utils.run_utils import map_command_to_langgraph, resolve_graph_context
 
 logger = structlog.getLogger(__name__)
 
@@ -207,10 +207,13 @@ async def _stream_graph(job: RunJob) -> _GraphResult:
         ) as graph,
         with_auth_ctx(job.user, job.user.permissions),  # type: ignore[arg-type]
     ):
+        # Trimmed here rather than inside one producer: both reach LangGraph, and
+        # a key the graph never declared is a TypeError on either of them.
+        context = await resolve_graph_context(graph, job.execution.context)
         if job.execution.event_streaming_v2:
-            await _stream_native_v2(job, graph, execution_input, run_config, result)
+            await _stream_native_v2(job, graph, execution_input, run_config, context, result)
         else:
-            await _stream_legacy(job, graph, execution_input, run_config, stream_modes, result)
+            await _stream_legacy(job, graph, execution_input, run_config, stream_modes, context, result)
 
     return result
 
@@ -225,6 +228,7 @@ async def _stream_legacy(
     execution_input: Any,
     run_config: dict[str, Any],
     stream_modes: list[str],
+    context: dict[str, Any],
     result: _GraphResult,
 ) -> None:
     """Stream via the v1 producer (legacy SSE endpoints)."""
@@ -235,7 +239,7 @@ async def _stream_legacy(
         input_data=execution_input,
         config=run_config,
         stream_mode=stream_modes,
-        context=job.execution.context,
+        context=context,
         subgraphs=job.behavior.subgraphs,
         durability=job.execution.durability,
         on_checkpoint=lambda _: None,
@@ -255,6 +259,7 @@ async def _stream_native_v2(
     graph: Any,
     execution_input: Any,
     run_config: dict[str, Any],
+    context: dict[str, Any],
     result: _GraphResult,
 ) -> None:
     """Stream via the native v3 protocol producer (Agent Protocol v2).
@@ -269,7 +274,7 @@ async def _stream_native_v2(
         graph=graph,
         input_data=execution_input,
         config=run_config,
-        context=job.execution.context,
+        context=context,
         durability=job.execution.durability,
     ):
         event_id = await broker_manager.allocate_event_id(run_id)

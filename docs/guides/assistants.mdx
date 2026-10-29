@@ -118,6 +118,28 @@ assistant = await client.assistants.update(
 
 `name` and `graph_id` are stored as non-null, so supplying either one empty is a `422` rather than a silent no-op. Omit them to leave them unchanged. `description` is nullable, so an explicit `None` clears it.
 
+## How a run picks these up
+
+Every run resolves the assistant it names and reads it as it stands at that moment
+— not a copy taken when the run or the cron was created, so editing an assistant
+changes the next run that uses it. This is one shared path: the HTTP API, a cron
+firing, an A2A task and an MCP tool call all go through it.
+
+A run's own `config` and `context` layer over the assistant's:
+
+- `config.configurable` merges key by key, as LangChain's own `merge_configs` does,
+  so a run that pins a single key keeps everything else the assistant had set.
+- Every other `config` key replaces the assistant's outright — `tags`,
+  `recursion_limit` and so on.
+- `context` merges key by key, and a key the run sets wins.
+
+The context is then trimmed to what the graph declares. LangGraph builds the
+context object from the graph's context schema and raises on a key it has never
+heard of, so anything undeclared is dropped before the run starts and logged as a
+warning naming the keys. A subgraph sees the root graph's context object rather
+than its own schema, so a key a sub-agent needs must be declared on the root graph
+to reach it.
+
 ## Versioning
 
 Assistants are versioned. Each update creates a new version while preserving the history:

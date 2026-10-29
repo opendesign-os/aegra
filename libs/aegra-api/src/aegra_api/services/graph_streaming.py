@@ -32,7 +32,6 @@ from pydantic import ValidationError
 from pydantic.v1 import ValidationError as ValidationErrorLegacy
 
 from aegra_api.models.enums import Durability
-from aegra_api.utils.run_utils import _filter_context_by_schema
 
 logger = structlog.getLogger(__name__)
 
@@ -178,14 +177,6 @@ async def stream_graph_events(
 
     # Track whether to filter non-interrupt updates
     only_interrupt_updates = not updates_explicitly_requested
-
-    # Apply context schema filtering if available
-    if context and not is_js_graph:
-        try:
-            context_schema = graph.get_context_jsonschema()
-            context = await _filter_context_by_schema(context, context_schema)
-        except Exception as e:
-            await logger.adebug(f"Failed to get context schema for filtering: {e}", exc_info=e)
 
     # Initialize streaming state
     messages: dict[str, BaseMessageChunk] = {}
